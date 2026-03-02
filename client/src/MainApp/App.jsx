@@ -423,9 +423,7 @@ export default function App() {
 
         <section className="content-area">
           <div className="output-card">
-            {results.length > 0 && (
               <AnalyticsDashboard data={results} activeFilter={filterStatus} onFilterChange={setFilterStatus} />
-            )}
 
             {results.length > 0 && (
               <div className="table-toolbar">

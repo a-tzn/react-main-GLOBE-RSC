@@ -48,26 +48,66 @@ const createCustomClusterIcon = (cluster) => {
   });
 };
 
-function MapRecenter({ lat, lng, zoom }) {
+function MapRecenter({ lat, lng, zoom, expanded, filteredResults = [], selectedSite = {} }) {
   const map = useMap();
   useEffect(() => {
+    // always recalc size whenever something changes
     map.invalidateSize();
-    if (lat && lng) {
+
+    // build bounds from all available coordinates
+    const pts = [];
+    filteredResults.forEach(site => {
+      if (site.lat && site.lng) pts.push([parseFloat(site.lat), parseFloat(site.lng)]);
+    });
+    if (selectedSite.lat && selectedSite.lng) {
+      pts.push([parseFloat(selectedSite.lat), parseFloat(selectedSite.lng)]);
+    }
+
+    if (pts.length) {
+      const bounds = L.latLngBounds(pts);
+      map.fitBounds(bounds, { padding: [60, 60] });
+    } else if (lat && lng) {
+      // fallback to single point
       map.flyTo([lat, lng], zoom, { animate: true, duration: 1.5 });
     }
-  }, [lat, lng, zoom, map]);
+  }, [lat, lng, zoom, expanded, filteredResults, selectedSite, map]);
   return null;
 }
 
 export default function MapVisualizer({ selectedSite = {}, filteredResults = [], isExpanded = false }) {
+  // calculate zoom level based on selection / expansion
   const currentZoom = selectedSite.lat ? 18 : (isExpanded ? 15 : 10);
-  const centerLat = selectedSite.lat || 7.1907;
-  const centerLng = selectedSite.lng || 125.4553;
+
+  // determine map centre: prioritise the selected site, otherwise average all available pins,
+  // and finally fall back to the hard‑coded region coordinates.
+  const [centreLat, centreLng] = (() => {
+    if (selectedSite.lat && selectedSite.lng) {
+      return [parseFloat(selectedSite.lat), parseFloat(selectedSite.lng)];
+    }
+    let sumLat = 0, sumLng = 0, count = 0;
+    filteredResults.forEach(site => {
+      if (site.lat && site.lng) {
+        sumLat += parseFloat(site.lat);
+        sumLng += parseFloat(site.lng);
+        count++;
+      }
+    });
+    if (count > 0) {
+      return [sumLat / count, sumLng / count];
+    }
+    // fallback default
+    return [7.1907, 125.4553];
+  })();
 
   return (
-    <MapContainer center={[centerLat, centerLng]} zoom={currentZoom} zoomControl={isExpanded} style={{ height: "100%", width: "100%", zIndex: 1 }}>
+    <MapContainer center={[centreLat, centreLng]} zoom={currentZoom} zoomControl={isExpanded} style={{ height: "100%", width: "100%", zIndex: 1 }}>
       <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-      <MapRecenter lat={selectedSite.lat} lng={selectedSite.lng} zoom={currentZoom} />
+      <MapRecenter
+         lat={centreLat}
+         lng={centreLng}
+         zoom={currentZoom}
+         expanded={isExpanded}
+      />
       
       <WMSTileLayer
         url="https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/global_ir.cgi"

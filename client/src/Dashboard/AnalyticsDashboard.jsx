@@ -1,7 +1,6 @@
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
 
 export default function AnalyticsDashboard({ data, activeFilter, onFilterChange }) {
-  if (!data || data.length === 0) return null;
 
   const newSites = data.filter(r => r.matchStatus === 'NEW').length;
   const removed = data.filter(r => r.matchStatus === 'REMOVED').length;
