@@ -345,10 +345,96 @@ export default function App() {
   };
 
   return (
-    <div className="app-container">
-      {isLoading && <LoadingScreen logo={currentLogo} />}
+    <>
+      {/* sidebar is removed from the floating window so it can show the body background */}
+      <aside className={`sidebar ${sidebarMapFull ? 'map-full' : ''}`}>
+        {/* original sidebar content moved here */}
+        <div className={`sidebar-carousel ${selectedRowDetails ? 'show-details' : ''}`}>
+          
+          <div className="carousel-panel">
+            <h3 style={{ marginTop: 0, marginBottom: '20px', fontSize: '1.2rem' }}>Data Input</h3>
+            <div className="upload-group">
+              <label className="input-label">NMS CSV</label>
+              <div className="file-drop-area">
+                <span className="file-msg">{monitorFile1 ? monitorFile1.name : "Drag & drop or click"}</span>
+                <input className="file-input" type="file" accept=".csv" onChange={(e) => setMonitorFile1(e.target.files[0])} />
+              </div>
+            </div>
+            <div className="upload-group">
+              <label className="input-label">UDM CSV</label>
+              <div className="file-drop-area">
+                <span className="file-msg">{monitorFile2 ? monitorFile2.name : "Drag & drop or click"}</span>
+                <input className="file-input" type="file" accept=".csv" onChange={(e) => setMonitorFile2(e.target.files[0])} />
+              </div>
+            </div>
+            <button className="btn primary-filled full-width" onClick={handleScan} disabled={isLoading} style={{ marginTop: 'auto' }}>
+              {isLoading ? "Scanning..." : "Scan Files"}
+            </button>
+          </div>
 
-      <header className="top-bar">
+          <div className="carousel-panel">
+            <div className="details-header">
+              <button className="back-btn" onClick={() => setSelectedRowDetails(null)}>←</button>
+              <h3 style={{ margin: 0, fontSize: '1.2rem' }}>Site Details</h3>
+            </div>
+            
+            {selectedRowDetails && (
+              <div className="details-content">
+                <div>
+                  <span className="input-label">PLA_ID</span>
+                  <div style={{ fontSize: '1.3rem', fontWeight: 'bold' }}>{selectedRowDetails.plaId}</div>
+                </div>
+                
+                <div>
+                  <span className="input-label">Status</span>
+                  <div style={{ marginTop: '6px' }}>
+                    <span className={`status-badge ${selectedRowDetails.matchStatus.toLowerCase()}`}>
+                      {selectedRowDetails.matchStatus}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="details-box">
+                  <span className="input-label">Tech Name (String)</span>
+                  <div style={{ fontWeight: 'bold', marginTop: '4px', wordBreak: 'break-word' }}>
+                    {selectedRowDetails.techName}
+                  </div>
+                </div>
+
+                <div className="details-box">
+                  <span className="input-label">System Remarks</span>
+                  <div style={{ fontWeight: 'bold', marginTop: '4px', wordBreak: 'break-word', color: selectedRowDetails.matchStatus === 'MISMATCH' ? '#d97706' : '' }}>
+                    {selectedRowDetails.remarks}
+                  </div>
+                </div>
+
+                <div>
+                  <span className="input-label">Location Profile</span>
+                  <div className="details-box" style={{ fontFamily: 'monospace', fontSize: '0.9rem', marginTop: '6px' }}>
+                    Lat: {selectedRowDetails.lat}<br/>
+                    Lng: {selectedRowDetails.lng}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="sidebar-map-wrapper">
+          <div className="map-floating-header">
+            <span className="floating-title">Site Visualizer</span>
+            <button className="floating-btn" onClick={() => setShowBigMap(true)}>⤢</button>
+          </div>
+          <div className="mini-map">
+            <MapVisualizer selectedSite={selectedSite} filteredResults={filteredResults} isExpanded={false} />
+          </div>
+        </div>
+      </aside>
+
+      <div className="app-container">
+        {isLoading && <LoadingScreen logo={currentLogo} />}
+
+        <header className="top-bar">
         <div className="logo-section">
           <img className="globe-logo" src={currentLogo} alt="Globe Logo" />
         </div>
@@ -376,90 +462,7 @@ export default function App() {
       </header>
 
       <main className="main-layout">
-        <aside className="sidebar">
-          <div className="sidebar-top-section">
-            <div className={`sidebar-carousel ${selectedRowDetails ? 'show-details' : ''}`}>
-              
-              <div className="carousel-panel">
-                <h3 style={{ marginTop: 0, marginBottom: '20px', fontSize: '1.2rem' }}>Data Input</h3>
-                <div className="upload-group">
-                  <label className="input-label">NMS CSV</label>
-                  <div className="file-drop-area">
-                    <span className="file-msg">{monitorFile1 ? monitorFile1.name : "Drag & drop or click"}</span>
-                    <input className="file-input" type="file" accept=".csv" onChange={(e) => setMonitorFile1(e.target.files[0])} />
-                  </div>
-                </div>
-                <div className="upload-group">
-                  <label className="input-label">UDM CSV</label>
-                  <div className="file-drop-area">
-                    <span className="file-msg">{monitorFile2 ? monitorFile2.name : "Drag & drop or click"}</span>
-                    <input className="file-input" type="file" accept=".csv" onChange={(e) => setMonitorFile2(e.target.files[0])} />
-                  </div>
-                </div>
-                <button className="btn primary-filled full-width" onClick={handleScan} disabled={isLoading} style={{ marginTop: 'auto' }}>
-                  {isLoading ? "Scanning..." : "Scan Files"}
-                </button>
-              </div>
-
-              <div className="carousel-panel">
-                <div className="details-header">
-                  <button className="back-btn" onClick={() => setSelectedRowDetails(null)}>←</button>
-                  <h3 style={{ margin: 0, fontSize: '1.2rem' }}>Site Details</h3>
-                </div>
-                
-                {selectedRowDetails && (
-                  <div className="details-content">
-                    <div>
-                      <span className="input-label">PLA_ID</span>
-                      <div style={{ fontSize: '1.3rem', fontWeight: 'bold' }}>{selectedRowDetails.plaId}</div>
-                    </div>
-                    
-                    <div>
-                      <span className="input-label">Status</span>
-                      <div style={{ marginTop: '6px' }}>
-                        <span className={`status-badge ${selectedRowDetails.matchStatus.toLowerCase()}`}>
-                          {selectedRowDetails.matchStatus}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="details-box">
-                      <span className="input-label">Tech Name (String)</span>
-                      <div style={{ fontWeight: 'bold', marginTop: '4px', wordBreak: 'break-word' }}>
-                        {selectedRowDetails.techName}
-                      </div>
-                    </div>
-
-                    <div className="details-box">
-                      <span className="input-label">System Remarks</span>
-                      <div style={{ fontWeight: 'bold', marginTop: '4px', wordBreak: 'break-word', color: selectedRowDetails.matchStatus === 'MISMATCH' ? '#d97706' : '' }}>
-                        {selectedRowDetails.remarks}
-                      </div>
-                    </div>
-
-                    <div>
-                      <span className="input-label">Location Profile</span>
-                      <div className="details-box" style={{ fontFamily: 'monospace', fontSize: '0.9rem', marginTop: '6px' }}>
-                        Lat: {selectedRowDetails.lat}<br/>
-                        Lng: {selectedRowDetails.lng}
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-
-          <div className="sidebar-map-wrapper">
-            <div className="map-floating-header">
-              <span className="floating-title">Site Visualizer</span>
-              <button className="floating-btn" onClick={() => setShowBigMap(true)}>⤢</button>
-            </div>
-            <div className="mini-map">
-              <MapVisualizer selectedSite={selectedSite} filteredResults={filteredResults} isExpanded={false} />
-            </div>
-          </div>
-        </aside>
+        {/* sidebar was relocated above, leave main-layout containing only content area */}
 
         <section className="content-area">
           <div className="output-card">
