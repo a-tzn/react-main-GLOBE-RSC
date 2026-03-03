@@ -13,7 +13,7 @@
   --bg-app: rgba(255, 255, 255, 0.45);        /* Main glass container */
   --bg-sidebar: rgba(255, 255, 255, 0.3);     /* Slightly deeper glass */
   --bg-content: transparent;                  
-  --bg-card: rgba(255, 255, 255, 0.5);        /* Glass building blocks */
+  --bg-card: rgba(255, 255, 255, 0.2);        /* Glass building blocks */
   --bg-input: rgba(255, 255, 255, 0.6);
   --bg-hover: rgba(255, 255, 255, 0.8);
   --bg-active: #e8f0fe;
@@ -49,7 +49,7 @@ body.dark-mode {
   --bg-app: #0b1437;             
   --bg-sidebar: #111c44;         
   --bg-content: #0b1437;         
-  --bg-card: #111c44;            
+  --bg-card: rgba(17, 28, 68, 0.4);            
   --bg-input: #111c44; /* Darker inputs fit better here */
   --bg-hover: #1b2559;           
   --bg-active: #2b3674;    
@@ -183,12 +183,55 @@ body.dark-mode .top-bar { box-shadow: 0 4px 20px rgba(0,0,0,0.4); }
   padding-top: 2.5rem;
 }
 
-.upload-group { margin-bottom: 1.5rem; }
+.upload-group { 
+  margin-bottom: 1.5rem; 
+  position: relative; 
+  z-index: 1;
+}
 .input-label { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 8px; color: var(--text-secondary); }
-.file-drop-area { position: relative; display: flex; align-items: center; justify-content: center; width: 100%; box-sizing: border-box; padding: 16px; border: 2px dashed var(--border-color); border-radius: var(--radius-btn); transition: all 0.3s ease; background: var(--bg-input); overflow: hidden; }
-.file-drop-area:hover { border-color: var(--brand-purple); background: rgba(112, 51, 255, 0.05); }
+
+.file-drop-area {
+  display: flex; 
+  flex-direction: row;
+  align-items: center;
+  gap: 30px;
+  min-height: 50px;
+  
+  /* --- THE FIX: Ensure it captures hover correctly --- */
+  position: relative;
+  background: var(--bg-input); /* Uses your glass input variable */
+  border-radius: var(--radius-btn);
+  padding: 5px 10px;
+  border: 1px solid var(--border-light);
+  transition: all 0.3s ease;
+  cursor: pointer;
+}
+
+.file-drop-area:hover {
+  background: var(--bg-hover);
+  border-color: var(--brand-purple);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-soft);
+}
+
+/* 4. Ensure the icon still animates */
+.file-drop-area:hover .upload-icon {
+  transform: translateY(-2px); /* Matches the box lift */
+  opacity: 1;
+}
+
 body.dark-mode .file-drop-area:hover { background: rgba(139, 92, 246, 0.1); }
-.file-msg { font-size: 0.85rem; font-weight: 500; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 90%; }
+.file-msg {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  /* Truncate long names with dots (...) */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px; 
+  display: block;
+}
 .file-input { position: absolute; left: 0; top: 0; height: 100%; width: 100%; opacity: 0; cursor: pointer; }
 
 .details-header {
@@ -256,21 +299,23 @@ body.dark-mode .details-header {
   overflow: hidden;
 }
 
-.mini-map {
-  width: 100%;
-  height: 100%;
-  position: relative;
-  border-radius: var(--radius-card);
-  border: 1px solid var(--border-light); /* subtle frosted border */
-  box-shadow: var(--shadow-soft);
-  overflow: hidden;
-}
-.map-floating-header { position: absolute; top: 24px; left: 24px; right: 24px; z-index: 400; display: flex; justify-content: space-between; align-items: center; pointer-events: none; }
+.map-floating-header { position: absolute; 
+  top: 24px; 
+  left: 24px; 
+  right: 24px; 
+  z-index: 400; 
+    margin-top: 2rem;
+  display: flex; 
+  justify-content: space-between; 
+  align-items: center; 
+  pointer-events: none; }
+  
 .floating-title { background: var(--bg-card); color: var(--text-primary); padding: 8px 14px; border-radius: var(--radius-btn); font-size: 0.85rem; font-weight: bold; box-shadow: var(--shadow-soft); pointer-events: auto; border: none; }
 .floating-btn { background: var(--bg-card); color: var(--text-primary); border: none; border-radius: var(--radius-btn); padding: 8px 12px; cursor: pointer; box-shadow: var(--shadow-soft); pointer-events: auto; display: flex; align-items: center; justify-content: center; transition: background 0.2s; }
 .floating-btn:hover { background: var(--bg-hover); }
 
 .mini-map { 
+  margin-top: 2rem;
   width: 100%; 
   height: 100%; 
   position: relative; 
@@ -325,26 +370,58 @@ body.dark-mode .details-header {
 .output-box { display: block !important; flex: 1; overflow: hidden; position: relative; }
 .table-wrapper { width: 100%; height: 100%; overflow: auto; background-color: transparent; } /* Made transparent to let glass bleed through */
 
-.result-table { width: 100% !important; border-collapse: collapse !important; border: none !important; }
+.result-table { 
+  width: 100% !important; 
+  border-collapse: collapse !important; 
+  border: none !important; 
+}
+
 .result-table th {
-  background: var(--bg-card); /* Keeps the subtle glass tint */
-  
-  backdrop-filter: var(--glass-blur); 
-  /* ✅ blur defined globally */ 
-  -webkit-backdrop-filter: var(--glass-blur);
-  
-  padding: 16px 20px;
-  text-align: left;
-  border: none;
-  border-bottom: 1px solid var(--border-color);
   position: sticky;
   top: 0;
   z-index: 10;
-  color: var(--text-secondary);
+  padding: 16px 20px;
+  text-align: left;
   font-size: 0.85rem;
   font-weight: 600;
-  box-shadow: 0 20px 10px rgba(0,0,0,0); /* Slightly stronger shadow to lift it */
+  color: var(--text-secondary);
+  
+  /* --- 1. THE FIX: Thicker white gradient to block scrolling text --- */
+  background: linear-gradient(
+    180deg, 
+    rgba(255, 255, 255, 0.95) 0%,   /* Almost solid at the top */
+    rgba(255, 255, 255, 0.75) 100%  /* Frosted at the bottom */
+  );
+  
+  /* --- 2. THE DEEP FROST --- */
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  
+  /* --- 3. THE BEVEL --- */
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.8);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.4);
+  
+  /* --- 4. THE 3D THICKNESS --- */
+  box-shadow: 
+    inset 0 1px 1px rgba(255, 255, 255, 0.9), 
+    0 8px 20px rgba(31, 38, 135, 0.05); 
 }
+body.dark-mode .result-table th {
+  /* Matching thicker dark glass */
+  background: linear-gradient(
+    180deg, 
+    rgba(17, 28, 68, 0.95) 0%, 
+    rgba(17, 28, 68, 0.85) 100%
+  );
+  border-top: 1px solid rgba(255, 255, 255, 0.2);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  box-shadow: 
+    inset 0 1px 1px rgba(255, 255, 255, 0.1), 
+    0 8px 20px rgba(0, 0, 0, 0.4);
+  color: #a3aed1; 
+}
+
 .result-table td { padding: 16px 20px; border: none; border-bottom: 1px solid var(--border-color); font-size: 0.9rem; color: var(--text-primary); white-space: nowrap; }
 
 .row-hover:hover { background-color: var(--bg-hover) !important; cursor: pointer; }
@@ -377,6 +454,28 @@ body.dark-mode .active-row { color: white !important; }
   border: none; 
 }
 
+/* --- SCAN BUTTON ICON ALIGNMENT --- */
+.scan-btn {
+  display: flex;
+
+  justify-content: center;
+  gap: 10px; /* Space between icon and text */
+}
+
+.btn-icon {
+  width: 18px;  /* Sleek, professional size */
+  height: 18px;
+  object-fit: contain;
+  /* Optional: if your search.png is black, this makes it white to match the text */
+  filter: brightness(0) invert(1); 
+}
+
+/* Optional: Slight pulse or scale effect on hover */
+.scan-btn:hover .btn-icon {
+  transform: scale(1.1);
+  transition: transform 0.2s ease;
+}
+
 .primary-filled { background: var(--brand-gradient); color: white; box-shadow: 0 4px 15px rgba(112, 51, 255, 0.3); }
 .primary-filled:hover { box-shadow: 0 6px 20px rgba(112, 51, 255, 0.4); transform: translateY(-1px); }
 .primary-filled:disabled { background: var(--text-secondary); box-shadow: none; transform: none; cursor: not-allowed; }
@@ -396,23 +495,147 @@ body.dark-mode .active-row { color: white !important; }
 ========================================================= */
 .dashboard-container { display: flex; gap: 1.5rem; padding: 2rem 2rem 1rem 2rem; background-color: transparent; border-bottom: none; align-items: stretch; flex-shrink: 0; }
 
-.chart-section { flex: 0 0 250px; background: var(--bg-card); backdrop-filter: var(--glass-blur); border-radius: var(--radius-card); border: 1px solid var(--border-light); box-shadow: var(--shadow-soft); padding: 1rem; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.chart-section { 
+  flex: 0 0 250px; 
+  border-radius: var(--radius-card); 
+  display: flex; 
+  flex-direction: column; 
+  align-items: center; 
+  justify-content: center; 
+  padding: 1rem; 
+  
+  /* --- The same crystal-clear glass base --- */
+  background: linear-gradient(
+    135deg, 
+    rgba(255, 255, 255, 0.15) 0%, 
+    rgba(255, 255, 255, 0.0) 100%
+  );
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  
+  /* --- The same 3D bevel and reflection --- */
+  border-top: 1px solid rgba(255, 255, 255, 0.4);
+  border-left: 1px solid rgba(255, 255, 255, 0.2);
+  border-right: 1px solid rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  
+  box-shadow: 
+    inset 1px 1px 1px rgba(255, 255, 255, 0.3), 
+    0 10px 30px rgba(31, 38, 135, 0.05);
+}
+
+body.dark-mode .chart-section {
+  background: linear-gradient(
+    135deg, 
+    rgba(255, 255, 255, 0.12) 0%, 
+    rgba(255, 255, 255, 0.02) 100%
+  );
+  border-top: 1px solid rgba(255, 255, 255, 0.25);
+  border-left: 1px solid rgba(255, 255, 255, 0.15);
+  border-right: 1px solid rgba(255, 255, 255, 0.02);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+  
+  box-shadow: 
+    inset 1px 1px 2px rgba(255, 255, 255, 0.15), 
+    0 15px 40px rgba(0, 0, 0, 0.6);
+}
+
 .chart-title { margin: 0; font-size: 0.85rem; color: var(--text-secondary); text-transform: uppercase; font-weight: 600; margin-bottom: 10px; }
 
 /* THE FLEX: Responsive grid instead of strict 5 columns */
-.cards-section { flex: 1; display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1.5rem; }
+.cards-section { 
+  flex: 1; 
+  display: grid; 
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); 
+  gap: 1.5rem; 
+}
 
-.stat-card { background: var(--bg-card); backdrop-filter: var(--glass-blur); padding: 1.5rem 1rem; border-radius: var(--radius-card); border: 1px solid var(--border-light); display: flex; flex-direction: column; align-items: center; justify-content: center; box-shadow: var(--shadow-soft); transition: transform 0.2s ease, border-color 0.3s ease; position: relative; border-bottom: 4px solid transparent; }
-.stat-card:hover { transform: translateY(-5px); box-shadow: var(--shadow-hover); }
+.stat-card {
+  position: relative; 
+  overflow: hidden;
+  border-radius: var(--radius-card); 
+  display: flex; 
+  flex-direction: column; 
+  align-items: center; 
+  justify-content: center; 
+  padding: 1.5rem 1rem; 
+  
+  /* --- 1. THE SHINE: Light hitting the top-left corner --- */
+  background: linear-gradient(
+    135deg, 
+    rgba(255, 255, 255, 0.45) 0%, 
+    rgba(255, 255, 255, 0.05) 100%
+  );
+  
+  /* --- 2. THE FROST: Deep blur --- */
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  
+  /* --- 3. THE BEVEL: Light catches the top/left edges --- */
+  border-top: 1px solid rgba(255, 255, 255, 0.7);
+  border-left: 1px solid rgba(255, 255, 255, 0.5);
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+  border-bottom: 4px solid transparent; /* Reserved for your color accents */
+  
+  /* --- 4. THE THICKNESS: Inner rim reflection + outer drop shadow --- */
+  box-shadow: 
+    inset 1px 1px 2px rgba(255, 255, 255, 0.6), /* Gives it physical thickness */
+    0 10px 30px rgba(31, 38, 135, 0.1); /* Lifts it off the background */
 
+  transition: all 0.4s cubic-bezier(0.25, 0.8, 0.25, 1); /* Super buttery hover */
+}
+
+body.dark-mode .stat-card {
+  /* Darker gradient to match the night theme, but still shiny */
+  background: linear-gradient(
+    135deg, 
+    rgba(255, 255, 255, 0.12) 0%, 
+    rgba(255, 255, 255, 0.02) 100%
+  );
+  border-top: 1px solid rgba(255, 255, 255, 0.25);
+  border-left: 1px solid rgba(255, 255, 255, 0.15);
+  border-right: 1px solid rgba(255, 255, 255, 0.02);
+  
+  box-shadow: 
+    inset 1px 1px 2px rgba(255, 255, 255, 0.15), 
+    0 15px 40px rgba(0, 0, 0, 0.6); /* Deep shadow for dark mode depth */
+}
+
+/* Hover Interaction: Lift and Glow */
+.stat-card:hover { 
+  transform: translateY(-6px); 
+  box-shadow: 
+    inset 1px 1px 3px rgba(255, 255, 255, 0.8), 
+    0 15px 40px rgba(112, 51, 255, 0.15); /* Adds a subtle purple glow on hover */
+}
+
+/* Icon Icon Style (matching yourdesign) */
+.stat-icon {
+  position: absolute;
+  top: 15px;
+  right: 15px;
+  width: 24px; 
+  height: 24px;
+  opacity: 0.6; /* Subtle look that fits the glass theme */
+  transition: all 0.3s ease;
+}
+
+/* Icon Hover effect */
+.stat-card:hover .stat-icon {
+  transform: scale(1.15) rotate(5deg);
+  opacity: 1;
+}
+
+/* Stat Text Styles */
 .stat-label { font-size: 0.8rem; font-weight: 600; color: var(--text-secondary); text-transform: capitalize; margin-bottom: 0.5rem; text-align: center; }
 .stat-value { font-size: 1.8rem; font-weight: 700; color: var(--text-primary); }
 
+/* Accent Colors (matching your provided JSX) */
 .stat-card.new { border-bottom-color: #0db15c; }
+.stat-card.unchanged { border-bottom-color: #46aa27; }
 .stat-card.removed { border-bottom-color: #f02849; }
-.stat-card.mismatch { border-bottom-color: #ff9800; }
+.stat-card.mismatch { border-bottom-color: #ff8b07; }
 .stat-card.total { border-bottom-color: var(--brand-purple); }
-.stat-card.unchanged { border-bottom-color: var(--text-secondary); }
 
 /* Modals */
 .map-modal-overlay { 

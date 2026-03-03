@@ -9,19 +9,16 @@ import { provinces, cities, siteCodes, cityToProvinceMap, cityToBarangayMap, reg
 import './App.css';
 
 // ============================================================================
-// HELPER: TELECOM GEOGRAPHIC PARSER (Safe Version)
+// HELPER 1: TELECOM GEOGRAPHIC PARSER
 // ============================================================================
 const parseLocationData = (baseName) => {
   if (!baseName) return { siteCode: "", place: "", city: "", province: "", region: "" };
 
   let remainingString = baseName.toUpperCase().trim();
-
   const provKeys = Object.keys(provinces).sort((a, b) => b.length - a.length);
   const cityKeys = Object.keys(cities).sort((a, b) => b.length - a.length);
-
   let extracted = { siteCode: "", place: "", city: "", province: "", region: "" };
 
-  // 1️⃣ PROVINCE PEEL
   for (const prov of provKeys) {
     const regex = new RegExp(`${prov}(\\d+)?((?:IO|ID|AS|CO|[XYLFWKHVZJBMNPRT])*)$`, "i");
     const match = remainingString.match(regex);
@@ -32,21 +29,12 @@ const parseLocationData = (baseName) => {
     }
   }
 
-  // 2️⃣ CITY PEEL (PROVINCE-AWARE VERSION)
   for (const cityKey of cityKeys) {
     const cityName = cities[cityKey];
     const provinceOfCity = cityToProvinceMap[cityName];
-
-    if (!provinceOfCity) continue;
-
-    // ✅ Only allow city if province matches extracted province
-    if (extracted.province && provinceOfCity !== extracted.province) {
-      continue;
-    }
-
+    if (!provinceOfCity || (extracted.province && provinceOfCity !== extracted.province)) continue;
     const regex = new RegExp(`${cityKey}(\\d+)?((?:IO|ID|AS|CO|[XYLFWKHVZJBMNPRT])*)$`, "i");
     const match = remainingString.match(regex);
-
     if (match) {
       extracted.city = cityName;
       remainingString = remainingString.slice(0, remainingString.length - match[0].length);
@@ -54,7 +42,6 @@ const parseLocationData = (baseName) => {
     }
   }
 
-  // 3️⃣ SITE CODE PEEL
   const sortedCodes = [...siteCodes].sort((a, b) => b.length - a.length);
   for (const code of sortedCodes) {
     if (remainingString.startsWith(code)) {
@@ -66,24 +53,12 @@ const parseLocationData = (baseName) => {
 
   extracted.place = remainingString.trim();
 
-  // 4️⃣ AUTO-FILL CITY FROM BARANGAY (SAFE VERSION)
   if (!extracted.city && extracted.place) {
-    const cleanPlace = extracted.place
-      .replace(/\d*(?:IO|ID|AS|CO|[XYLFWKHVZJBMNPRT])*$/i, "")
-      .trim()
-      .toUpperCase();
-
+    const cleanPlace = extracted.place.replace(/\d*(?:IO|ID|AS|CO|[XYLFWKHVZJBMNPRT])*$/i, "").trim().toUpperCase();
     for (const [city, barangays] of Object.entries(cityToBarangayMap)) {
       const provinceOfCity = cityToProvinceMap[city];
-
-      // ✅ Only check cities within detected province
-      if (extracted.province && provinceOfCity !== extracted.province) {
-        continue;
-      }
-
-      const upperBarangays = barangays.map(b => b.toUpperCase());
-
-      if (upperBarangays.includes(cleanPlace)) {
+      if (extracted.province && provinceOfCity !== extracted.province) continue;
+      if (barangays.map(b => b.toUpperCase()).includes(cleanPlace)) {
         extracted.city = city;
         extracted.place = cleanPlace;
         break;
@@ -91,12 +66,7 @@ const parseLocationData = (baseName) => {
     }
   }
 
-  // 5️⃣ AUTO-FILL PROVINCE FROM CITY
-  if (!extracted.province && extracted.city) {
-    extracted.province = cityToProvinceMap[extracted.city] || "";
-  }
-
-  // 6️⃣ AUTO-FILL REGION FROM PROVINCE
+  if (!extracted.province && extracted.city) extracted.province = cityToProvinceMap[extracted.city] || "";
   if (extracted.province) {
     for (const [regionName, provinceArray] of Object.entries(regionsToProvincesMap)) {
       if (provinceArray.includes(extracted.province)) {
@@ -105,30 +75,23 @@ const parseLocationData = (baseName) => {
       }
     }
   }
-
   return extracted;
 };
 
 // ============================================================================
-// HELPER 2: TECHNOLOGY SPLITTER (Improved)
+// HELPER 2: TECHNOLOGY SPLITTER
 // ============================================================================
 const getTechSplits = (suffix) => {
   const s = (suffix || "").toUpperCase();
   let res = { g2: "", g4: "", g5: "" };
 
-  if (!s || /^(?:ID|AS)+$/i.test(s)) {
-    res.g2 = "YES";
-  }
+  if (!s || /^(?:ID|AS)+$/i.test(s)) res.g2 = "YES";
 
   for (let char of s) {
     if ("MNPRT".includes(char)) res.g5 += char;
     else if ("FHLKWYVB".includes(char)) res.g4 += char;
     else if (char === "X") res.g2 = "X";
   }
-
-  // ❌ Removed forced 2G fallback (business-safe)
-  // if (!res.g2 && (res.g4 || res.g5)) res.g2 = "YES";
-
   return res;
 };
 
@@ -164,7 +127,6 @@ export default function App() {
   const [selectedSite, setSelectedSite] = useState({ lat: 7.05568, lng: 125.5469, zoom: 15 });
   const [showBigMap, setShowBigMap] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
-  
   const [selectedRowDetails, setSelectedRowDetails] = useState(null);
 
   useEffect(() => {
@@ -175,25 +137,10 @@ export default function App() {
   const toggleTheme = () => setIsDarkMode(prev => !prev);
   const currentLogo = isDarkMode ? globeLogoDark : globeLogoLight;
 
-  const filteredResults = results.filter(row => {
-    const term = searchTerm.toLowerCase();
-    const matchesSearch = [row.plaId, row.techName, row.baseLocation, row.remarks]
-      .filter(Boolean).some(value => value.toString().toLowerCase().includes(term));
-    const matchesStatus = filterStatus === 'ALL' ? true : row.matchStatus === filterStatus;
-    return matchesSearch && matchesStatus;
-  }).sort((a, b) => {
-    const baseA = a.baseLocation || "";
-    const baseB = b.baseLocation || "";
-    const baseCompare = baseA.localeCompare(baseB, undefined, { numeric: true, sensitivity: 'base' });
-    
-    if (baseCompare === 0) {
-      const plaA = a.plaId || "";
-      const plaB = b.plaId || "";
-      return plaA.localeCompare(plaB, undefined, { numeric: true, sensitivity: 'base' });
-    }
-    
-    return baseCompare;
-  });
+  const handleFileChange = (e, setFileState) => {
+    const file = e.target.files[0];
+    if (file) setFileState(file);
+  };
 
   const readFileAsText = (file) => {
     return new Promise((resolve, reject) => {
@@ -204,91 +151,72 @@ export default function App() {
     });
   };
 
- const getShortRegionByProvince = (province) => {
+  const getShortRegionByProvince = (province) => {
     if (!province) return "";
-
     province = province.toUpperCase().trim();
-
     for (const [regionName, provinces] of Object.entries(regionsToProvincesMap)) {
-      if (provinces.includes(province)) {
-        return regionName; // Found the region
-      }
+      if (provinces.includes(province)) return regionName; 
     }
-
-    return ""; // Return empty string if not found
+    return ""; 
   };
 
- const handleSpecificExport = (exportCategory) => {
+  const handleSpecificExport = (exportCategory) => {
     setShowExportMenu(false);
     if (results.length === 0) return alert("No data to export.");
 
     const dataToExport = exportCategory === 'ALL' ? results : results.filter(row => row.matchStatus === exportCategory);
     if (dataToExport.length === 0) return alert(`There are no "${exportCategory}" sites to export.`);
 
-  //Column Headers and Data Mapping Logic
-  const excelData = dataToExport.map(row => {
-  const geo = parseLocationData(row.baseLocation);
-  const tech = getTechSplits(row.technologySuffix);
-  const reg = getShortRegionByProvince(row.prov);
+    const excelData = dataToExport.map(row => {
+      const geo = parseLocationData(row.baseLocation);
+      const tech = getTechSplits(row.technologySuffix);
+      const reg = getShortRegionByProvince(row.prov);
 
-  return {
-    "Region": "MIN",
-    "PLA ID": row.plaId || "",
-    "PLA Status": "",
-    "Area": row.sArea || "",
-    "Region ": (geo.region || reg) || "",
-    "Province": (geo.province || row.prov) || "",
-    "City/Municipality": (geo.city || row.mCity) || "",
-    "Barangay": geo.place || "",
-    "Site Address": row.sAdd || "",
-    "Longitude": row.lng || "",
-    "Latitude": row.lat || "",
-    "2G": tech.g2 || "",
-    "4G": tech.g4 || "",
-    "5G": tech.g5 || "",
-    "Techname/BTS": row.techName || "",
-    "Tech Description": "",
-    "Tech Status": "",
-    "Site Owner": row.siteOwner || geo.siteCode || "GLOBE TELECOM",
-    "Territory": row.trt || "",
-    "Hiroshima Severity": row.hSvr || "",
-    "Remarks": row.remarks || "",
-    "Remarks Status": row.matchStatus || ""
-  };
-});
+      return {
+        "Region": "MIN",
+        "PLA ID": row.plaId || "",
+        "PLA Status": "",
+        "Area": row.sArea || "",
+        "Region ": (geo.region || reg) || "",
+        "Province": (geo.province || row.prov) || "",
+        "City/Municipality": (geo.city || row.mCity) || "",
+        "Barangay": geo.place || "",
+        "Site Address": row.sAdd || "",
+        "Longitude": row.lng || "",
+        "Latitude": row.lat || "",
+        "2G": tech.g2 || "",
+        "4G": tech.g4 || "",
+        "5G": tech.g5 || "",
+        "Techname/BTS": row.techName || "",
+        "Tech Description": "",
+        "Tech Status": "",
+        "Site Owner": row.siteOwner || geo.siteCode || "GLOBE TELECOM",
+        "Territory": row.trt || "",
+        "Hiroshima Severity": row.hSvr || "",
+        "Remarks": row.remarks || "",
+        "Remarks Status": row.matchStatus || ""
+      };
+    });
 
-    // 2. Create a new worksheet from our data
     const worksheet = XLSX.utils.json_to_sheet(excelData);
-
-    // 3. AUTO-FIT COLUMNS LOGIC
-    // We get the headers by looking at the keys of the first object
     const headers = Object.keys(excelData[0]);
     
     const columnWidths = headers.map(header => {
-      let maxLength = header.length; // Start with header length
-      
-      // Loop through every row to find the longest string in this column
+      let maxLength = header.length; 
       excelData.forEach(row => {
         const cellValue = row[header] ? row[header].toString() : "";
-        if (cellValue.length > maxLength) {
-          maxLength = cellValue.length;
-        }
+        if (cellValue.length > maxLength) maxLength = cellValue.length;
       });
-      
-      return { wch: maxLength + 2 }; // +2 for padding
+      return { wch: maxLength + 2 }; 
     });
 
-    // Apply the calculated widths to the worksheet
     worksheet['!cols'] = columnWidths;
-
-    // 4. Create the workbook and trigger the download
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "Masterlist Data");
     
     const dateStr = new Date().toISOString().split('T')[0];
     const fileName = `StormMasterlist_${exportCategory === 'ALL' ? 'Complete' : exportCategory}_${dateStr}.xlsx`;
     
-    // Write the file directly (This replaces all the old Blob/CSV code!)
     XLSX.writeFile(workbook, fileName);
   };
 
@@ -331,7 +259,10 @@ export default function App() {
                technologySuffix: "LYK",
                remarks: "Mock data generated.",
                lat: (7.0 + (Math.random() * 0.5)).toFixed(5), 
-               lng: (125.4 + (Math.random() * 0.5)).toFixed(5) 
+               lng: (125.4 + (Math.random() * 0.5)).toFixed(5),
+               original2G: `SITE${i}A | SITE${i}B`,
+               original4G: `SITE${i}C`,
+               original5G: ""
              });
            }
            setResults(mockData);
@@ -343,6 +274,24 @@ export default function App() {
       setIsLoading(false);
     }
   };
+
+  const filteredResults = results.filter(row => {
+    const term = searchTerm.toLowerCase();
+    const matchesSearch = [row.plaId, row.techName, row.baseLocation, row.remarks]
+      .filter(Boolean).some(value => value.toString().toLowerCase().includes(term));
+    const matchesStatus = filterStatus === 'ALL' ? true : row.matchStatus === filterStatus;
+    return matchesSearch && matchesStatus;
+  }).sort((a, b) => {
+    const baseA = a.baseLocation || "";
+    const baseB = b.baseLocation || "";
+    const baseCompare = baseA.localeCompare(baseB, undefined, { numeric: true, sensitivity: 'base' });
+    if (baseCompare === 0) {
+      const plaA = a.plaId || "";
+      const plaB = b.plaId || "";
+      return plaA.localeCompare(plaB, undefined, { numeric: true, sensitivity: 'base' });
+    }
+    return baseCompare;
+  });
 
   return (
     <div className="app-container">
@@ -383,21 +332,24 @@ export default function App() {
               <div className="carousel-panel">
                 <h3 style={{ marginTop: 0, marginBottom: '20px', fontSize: '1.2rem' }}>Data Input</h3>
                 <div className="upload-group">
-                  <label className="input-label">NMS CSV</label>
+                  <span className="input-label">NMS CSV</span>
                   <div className="file-drop-area">
+                    <img src={isDarkMode ? '/fileDark.png' : '/fileLight.png'} className="upload-icon" alt="icon" />
                     <span className="file-msg">{monitorFile1 ? monitorFile1.name : "Drag & drop or click"}</span>
-                    <input className="file-input" type="file" accept=".csv" onChange={(e) => setMonitorFile1(e.target.files[0])} />
+                    <input className="file-input" type="file" accept=".csv" onChange={(e) => handleFileChange(e, setMonitorFile1)} />
                   </div>
                 </div>
                 <div className="upload-group">
-                  <label className="input-label">UDM CSV</label>
+                  <span className="input-label">UDM CSV</span>
                   <div className="file-drop-area">
+                    <img src={isDarkMode ? '/fileDark.png' : '/fileLight.png'} className="upload-icon" alt="icon" />
                     <span className="file-msg">{monitorFile2 ? monitorFile2.name : "Drag & drop or click"}</span>
-                    <input className="file-input" type="file" accept=".csv" onChange={(e) => setMonitorFile2(e.target.files[0])} />
+                    <input className="file-input" type="file" accept=".csv" onChange={(e) => handleFileChange(e, setMonitorFile2)} />
                   </div>
                 </div>
-                <button className="btn primary-filled full-width" onClick={handleScan} disabled={isLoading} style={{ marginTop: 'auto' }}>
-                  {isLoading ? "Scanning..." : "Scan Files"}
+                <button className="btn primary-filled scan-btn full-width" onClick={handleScan} disabled={isLoading} style={{ marginTop: 'auto' }}>
+                  <img src="/search.png" alt="Scan" className="btn-icon" />
+                  <span>{isLoading ? "Scanning..." : "Scan Files"}</span>
                 </button>
               </div>
 
@@ -413,7 +365,6 @@ export default function App() {
                       <span className="input-label">PLA_ID</span>
                       <div style={{ fontSize: '1.3rem', fontWeight: 'bold' }}>{selectedRowDetails.plaId}</div>
                     </div>
-                    
                     <div>
                       <span className="input-label">Status</span>
                       <div style={{ marginTop: '6px' }}>
@@ -422,21 +373,18 @@ export default function App() {
                         </span>
                       </div>
                     </div>
-
                     <div className="details-box">
                       <span className="input-label">Tech Name (String)</span>
                       <div style={{ fontWeight: 'bold', marginTop: '4px', wordBreak: 'break-word' }}>
                         {selectedRowDetails.techName}
                       </div>
                     </div>
-
                     <div className="details-box">
                       <span className="input-label">System Remarks</span>
                       <div style={{ fontWeight: 'bold', marginTop: '4px', wordBreak: 'break-word', color: selectedRowDetails.matchStatus === 'MISMATCH' ? '#d97706' : '' }}>
                         {selectedRowDetails.remarks}
                       </div>
                     </div>
-
                     <div>
                       <span className="input-label">Location Profile</span>
                       <div className="details-box" style={{ fontFamily: 'monospace', fontSize: '0.9rem', marginTop: '6px' }}>
@@ -463,17 +411,63 @@ export default function App() {
 
         <section className="content-area">
           <div className="output-card">
-              <AnalyticsDashboard data={results} activeFilter={filterStatus} onFilterChange={setFilterStatus} />
+            
+            <div className="dashboard-container">
+              <AnalyticsDashboard data={results} activeFilter={filterStatus} onFilterChange={setFilterStatus} isDarkMode={isDarkMode} />
+              
+              <div className="cards-section">
+                <div className="stat-card total" onClick={() => setFilterStatus('ALL')} style={{cursor: 'pointer'}}>
+                  <img src={isDarkMode ? '/checkDark.png' : '/checkLight.png'} className="stat-icon" alt="Total" />
+                  <div className="stat-label">Total Validated</div>
+                  <div className="stat-value">{results.length}</div>
+                </div>
 
-            {results.length > 0 && (
-              <div className="table-toolbar">
-                <span className="table-label">
-                  {filterStatus === 'ALL' ? 'Detailed Report' : `Filtered View: ${filterStatus}`}
-                </span>
-                <input type="text" className="search-bar" placeholder="Search ID or Name..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+                <div className="stat-card unchanged" onClick={() => setFilterStatus('UNCHANGED')} style={{cursor: 'pointer'}}>
+                  <img src={isDarkMode ? '/verifiedDark.png' : '/verifiedLight.png'} className="stat-icon" alt="Verified" />
+                  <div className="stat-label">Verified</div>
+                  <div className="stat-value">{results.filter(r => r.matchStatus === 'UNCHANGED').length}</div>
+                </div>
+
+                <div className="stat-card new" onClick={() => setFilterStatus('NEW')} style={{cursor: 'pointer'}}>
+                  <img src={isDarkMode ? '/glitterDark.png' : '/glitterLight.png'} className="stat-icon" alt="New" />
+                  <div className="stat-label">New In NMS</div>
+                  <div className="stat-value">{results.filter(r => r.matchStatus === 'NEW').length}</div>
+                </div>
+
+                <div className="stat-card removed" onClick={() => setFilterStatus('REMOVED')} style={{cursor: 'pointer'}}>
+                  <img src={isDarkMode ? '/removedDark.png' : '/removedLight.png'} className="stat-icon" alt="Removed" />
+                  <div className="stat-label">Missing (Removed)</div>
+                  <div className="stat-value">{results.filter(r => r.matchStatus === 'REMOVED').length}</div>
+                </div>
+
+                <div className="stat-card mismatch" onClick={() => setFilterStatus('MISMATCH')} style={{cursor: 'pointer'}}>
+                  <img src={isDarkMode ? '/warningDark.png' : '/warningLight.png'} className="stat-icon" alt="Warning" />
+                  <div className="stat-label">Discrepancy</div>
+                  <div className="stat-value">{results.filter(r => r.matchStatus === 'MISMATCH').length}</div>
+                </div>
               </div>
-            )}
+            </div>
 
+            {/* --- ALWAYS SHOW THE TOOLBAR --- */}
+            <div className="table-toolbar">
+              <span className="table-label">
+                {filterStatus === 'ALL' ? 'Detailed Report' : `Filtered View: ${filterStatus}`}
+              </span>
+              <input 
+                type="text" 
+                className="search-bar" 
+                placeholder="Search ID or Name..." 
+                value={searchTerm} 
+                onChange={(e) => setSearchTerm(e.target.value)} 
+                disabled={results.length === 0} 
+                style={{ 
+                  opacity: results.length === 0 ? 0.5 : 1, 
+                  cursor: results.length === 0 ? 'not-allowed' : 'text' 
+                }}
+              />
+            </div>
+
+            {/* --- CONDITIONALLY SHOW TABLE OR PLACEHOLDER --- */}
             <div className="output-box">
               {results.length > 0 ? (
                 <div className="table-wrapper">
@@ -490,15 +484,11 @@ export default function App() {
                     </thead>
                     <tbody>
                       {filteredResults.flatMap((row, i) => {
-                        
-                        // --- 1. THE RAN CLASSIFIER FUNCTION ---
                         const buildSubRows = (origStringGroup, baseGen) => {
                           if (!origStringGroup) return [];
-                          
                           return origStringGroup.split(" | ").map(nmsName => {
                             const suffixMatch = nmsName.match(/(?:ID|AS|[XYLFWKHVZJBMNPRT])+$/i);
                             const suffix = suffixMatch ? suffixMatch[0].toUpperCase() : "";
-                            
                             let label = baseGen;
                             
                             if (baseGen === "4G") {
@@ -506,22 +496,17 @@ export default function App() {
                               if (/[FLWY]/i.test(suffix)) types.push("FDD");
                               if (/H/i.test(suffix)) types.push("TDD");
                               if (/V/i.test(suffix)) types.push("MM");
-
                               if (types.length > 0) label = `4G-${types.join("/")}`;
-                            }
-                            else if (baseGen === "5G") {
+                            } else if (baseGen === "5G") {
                               let types = [];
                               if (/M/i.test(suffix)) types.push("MM");
                               if (/[PN]/i.test(suffix)) types.push("NMM");
-
                               if (types.length > 0) label = `5G-${types.join("/")}`;
                             }
-                            
                             return { techGen: label, nmsName: nmsName };
                           });
                         };
 
-                        // --- 2. UNFOLD THE ROWS ---
                         const subRows = [
                           ...buildSubRows(row.original2G, "2G"),
                           ...buildSubRows(row.original4G, "4G"),
@@ -532,7 +517,6 @@ export default function App() {
                           subRows.push({ techGen: "UDM Only", nmsName: row.techName });
                         }
 
-                        // --- 3. DRAW THE TABLE ---
                         return subRows.map((sub, j) => {
                           const isExactRow = selectedSite?.index === i;
                           const isSameGroup = selectedSite?.id === row.plaId && !isExactRow;
@@ -561,17 +545,13 @@ export default function App() {
                                   </span>
                                 )}
                               </td>
-                              
                               <td style={{ fontWeight: '500' }}>{j === 0 ? row.baseLocation : ""}</td>
-                              
                               <td style={{ fontWeight: 'bold', color: sub.techGen.includes('5G') ? '#28a745' : (sub.techGen.includes('4G') ? '#007bff' : '#666') }}>
                                 {sub.techGen}
                               </td>
-                              
                               <td style={{ fontFamily: 'monospace', color: '#1a73e8', fontWeight: 'bold' }}>
                                 {sub.nmsName}
                               </td>
-                              
                               <td style={{ fontSize: '0.75rem', color: 'var(--text-secondary)'}}>
                                 {j === 0 ? row.remarks : ""}
                               </td>
@@ -584,10 +564,13 @@ export default function App() {
                 </div>
               ) : (
                 <div className="placeholder-container">
-                  <p className="placeholder-text">Ready for Delta check. Please upload NMS and UDM CSV files.</p>
+                  <p className="placeholder-text" style={{ color: 'var(--text-secondary)', fontSize: '1.1rem' }}>
+                    Ready for Delta check. Please upload NMS and UDM CSV files.
+                  </p>
                 </div>
               )}
             </div>
+
           </div>
         </section>
       </main>
@@ -606,5 +589,5 @@ export default function App() {
         </div>
       )}
     </div>
-  )
+  );
 }
