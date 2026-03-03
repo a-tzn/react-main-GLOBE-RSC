@@ -9,81 +9,95 @@ import { provinces, cities, siteCodes, cityToProvinceMap, cityToBarangayMap, reg
 import './App.css';
 
 // ============================================================================
-// HELPER 1: TELECOM GEOGRAPHIC PARSER (For the Export)
+// HELPER: TELECOM GEOGRAPHIC PARSER (Safe Version)
 // ============================================================================
 const parseLocationData = (baseName) => {
   if (!baseName) return { siteCode: "", place: "", city: "", province: "", region: "" };
-  let remainingString = baseName.toUpperCase();
 
-  // ❌ NOTE: We REMOVED the aggressive .replace() line from here!
+  let remainingString = baseName.toUpperCase().trim();
 
   const provKeys = Object.keys(provinces).sort((a, b) => b.length - a.length);
   const cityKeys = Object.keys(cities).sort((a, b) => b.length - a.length);
 
   let extracted = { siteCode: "", place: "", city: "", province: "", region: "" };
 
-  // 1. PEEL THE PROVINCE (Safely eats trailing numbers and tech suffixes ONLY IF the province is found first)
+  // 1️⃣ PROVINCE PEEL
   for (const prov of provKeys) {
-    const regex = new RegExp(prov + "\\d*(?:IO|ID|AS|CO|[XYLFWKHVZJBMNPRT])*$", "i");
+    const regex = new RegExp(`${prov}(\\d+)?((?:IO|ID|AS|CO|[XYLFWKHVZJBMNPRT])*)$`, "i");
     const match = remainingString.match(regex);
-    
     if (match) {
       extracted.province = provinces[prov];
-      remainingString = remainingString.slice(0, -match[0].length); 
+      remainingString = remainingString.slice(0, remainingString.length - match[0].length);
       break;
     }
   }
 
-  // 2. PEEL THE CITY (Safely eats trailing numbers and tech suffixes)
-  for (const city of cityKeys) {
-    const regex = new RegExp(city + "\\d*(?:IO|ID|AS|CO|[XYLFWKHVZJBMNPRT])*$", "i");
+  // 2️⃣ CITY PEEL (PROVINCE-AWARE VERSION)
+  for (const cityKey of cityKeys) {
+    const cityName = cities[cityKey];
+    const provinceOfCity = cityToProvinceMap[cityName];
+
+    if (!provinceOfCity) continue;
+
+    // ✅ Only allow city if province matches extracted province
+    if (extracted.province && provinceOfCity !== extracted.province) {
+      continue;
+    }
+
+    const regex = new RegExp(`${cityKey}(\\d+)?((?:IO|ID|AS|CO|[XYLFWKHVZJBMNPRT])*)$`, "i");
     const match = remainingString.match(regex);
-    
+
     if (match) {
-      extracted.city = cities[city];
-      remainingString = remainingString.slice(0, -match[0].length);
+      extracted.city = cityName;
+      remainingString = remainingString.slice(0, remainingString.length - match[0].length);
       break;
     }
   }
 
-  // 3. PEEL THE SITE CODE FROM THE FRONT
-  let foundCode = false;
-  const sortedCodes = [...siteCodes].sort((a, b) => b.length - a.length); 
-  
+  // 3️⃣ SITE CODE PEEL
+  const sortedCodes = [...siteCodes].sort((a, b) => b.length - a.length);
   for (const code of sortedCodes) {
     if (remainingString.startsWith(code)) {
       extracted.siteCode = code;
-      remainingString = remainingString.slice(code.length); 
-      foundCode = true;
+      remainingString = remainingString.slice(code.length);
       break;
     }
   }
 
-  if (!foundCode) extracted.siteCode = ""; // Default if no code found
-  extracted.place = remainingString || "";
+  extracted.place = remainingString.trim();
 
-  // 4. AUTO-FILL CITY FROM BARANGAY
-  if (extracted.city === "." && extracted.place !== "") {
-    // Clean the remaining place of telecom junk just in case the encoder only typed the barangay (e.g., BUHANGINIO)
-    const cleanPlace = extracted.place.replace(/\d*(?:IO|ID|AS|CO|[XYLFWKHVZJBMNPRT])*$/i, "");
-    
-    for (const [cityName, barangayArray] of Object.entries(cityToBarangayMap)) {
-      const upperBarangays = barangayArray.map(b => b.toUpperCase());
+  // 4️⃣ AUTO-FILL CITY FROM BARANGAY (SAFE VERSION)
+  if (!extracted.city && extracted.place) {
+    const cleanPlace = extracted.place
+      .replace(/\d*(?:IO|ID|AS|CO|[XYLFWKHVZJBMNPRT])*$/i, "")
+      .trim()
+      .toUpperCase();
+
+    for (const [city, barangays] of Object.entries(cityToBarangayMap)) {
+      const provinceOfCity = cityToProvinceMap[city];
+
+      // ✅ Only check cities within detected province
+      if (extracted.province && provinceOfCity !== extracted.province) {
+        continue;
+      }
+
+      const upperBarangays = barangays.map(b => b.toUpperCase());
+
       if (upperBarangays.includes(cleanPlace)) {
-        extracted.city = cityName;
-        extracted.place = cleanPlace; // Update place to remove the IO/ID junk
+        extracted.city = city;
+        extracted.place = cleanPlace;
         break;
       }
     }
   }
 
-  // 5. AUTO-FILL PROVINCE FROM CITY
-  if (extracted.province === "" && extracted.city !== "") {
+  // 5️⃣ AUTO-FILL PROVINCE FROM CITY
+  if (!extracted.province && extracted.city) {
     extracted.province = cityToProvinceMap[extracted.city] || "";
   }
 
-  // 6. AUTO-FILL REGION FROM PROVINCE
-  if (extracted.province !== "") {
+  // 6️⃣ AUTO-FILL REGION FROM PROVINCE
+  if (extracted.province) {
     for (const [regionName, provinceArray] of Object.entries(regionsToProvincesMap)) {
       if (provinceArray.includes(extracted.province)) {
         extracted.region = regionName;
@@ -96,14 +110,14 @@ const parseLocationData = (baseName) => {
 };
 
 // ============================================================================
-// HELPER 2: TECHNOLOGY SPLITTER (For the Export)
+// HELPER 2: TECHNOLOGY SPLITTER (Improved)
 // ============================================================================
 const getTechSplits = (suffix) => {
   const s = (suffix || "").toUpperCase();
   let res = { g2: "", g4: "", g5: "" };
-  
+
   if (!s || /^(?:ID|AS)+$/i.test(s)) {
-    res.g2 = "YES"; 
+    res.g2 = "YES";
   }
 
   for (let char of s) {
@@ -111,8 +125,9 @@ const getTechSplits = (suffix) => {
     else if ("FHLKWYVB".includes(char)) res.g4 += char;
     else if (char === "X") res.g2 = "X";
   }
-  
-  if (!res.g2 && (res.g4 || res.g5)) res.g2 = "YES";
+
+  // ❌ Removed forced 2G fallback (business-safe)
+  // if (!res.g2 && (res.g4 || res.g5)) res.g2 = "YES";
 
   return res;
 };
@@ -189,6 +204,20 @@ export default function App() {
     });
   };
 
+ const getShortRegionByProvince = (province) => {
+    if (!province) return "";
+
+    province = province.toUpperCase().trim();
+
+    for (const [regionName, provinces] of Object.entries(regionsToProvincesMap)) {
+      if (provinces.includes(province)) {
+        return regionName; // Found the region
+      }
+    }
+
+    return ""; // Return empty string if not found
+  };
+
  const handleSpecificExport = (exportCategory) => {
     setShowExportMenu(false);
     if (results.length === 0) return alert("No data to export.");
@@ -200,21 +229,32 @@ export default function App() {
   const excelData = dataToExport.map(row => {
   const geo = parseLocationData(row.baseLocation);
   const tech = getTechSplits(row.technologySuffix);
-  
-  const rawObj = {
-    "Region": "MIN", "PLA ID": row.plaId, "PLA Status": "", "Area": "", 
-    "Region ": geo.region, "Province": geo.province, "City/Municipality": geo.city,
-    "Barangay": geo.place, "Site Address": "", "Longitude": row.lng, "Latitude": row.lat, 
-    "2G": tech.g2, "4G": tech.g4, "5G": tech.g5, "Techname/BTS": row.techName, "Tech Description": "",
-    "Tech Status": "", 
-    
-    "Site Owner": row.siteOwner ? row.siteOwner : (geo.siteCode ? geo.siteCode : "GLOBE TELECOM"), 
-    
-    "Territory": "", "Hiroshima Severity": "", "Remarks": row.remarks, "Remarks Status": row.matchStatus
+  const reg = getShortRegionByProvince(row.prov);
+
+  return {
+    "Region": "MIN",
+    "PLA ID": row.plaId || "",
+    "PLA Status": "",
+    "Area": row.sArea || "",
+    "Region ": (geo.region || reg) || "",
+    "Province": (geo.province || row.prov) || "",
+    "City/Municipality": (geo.city || row.mCity) || "",
+    "Barangay": geo.place || "",
+    "Site Address": row.sAdd || "",
+    "Longitude": row.lng || "",
+    "Latitude": row.lat || "",
+    "2G": tech.g2 || "",
+    "4G": tech.g4 || "",
+    "5G": tech.g5 || "",
+    "Techname/BTS": row.techName || "",
+    "Tech Description": "",
+    "Tech Status": "",
+    "Site Owner": row.siteOwner || geo.siteCode || "GLOBE TELECOM",
+    "Territory": row.trt || "",
+    "Hiroshima Severity": row.hSvr || "",
+    "Remarks": row.remarks || "",
+    "Remarks Status": row.matchStatus || ""
   };
-  return Object.fromEntries(
-    Object.entries(rawObj).map(([k, v]) => [k, v ? String(v).toUpperCase() : ""])
-  );
 });
 
     // 2. Create a new worksheet from our data
@@ -466,15 +506,15 @@ export default function App() {
                               if (/[FLWY]/i.test(suffix)) types.push("FDD");
                               if (/H/i.test(suffix)) types.push("TDD");
                               if (/V/i.test(suffix)) types.push("MM");
-                              
-                              if (types.length > 0) label = `4G`;
-                            } 
+
+                              if (types.length > 0) label = `4G-${types.join("/")}`;
+                            }
                             else if (baseGen === "5G") {
                               let types = [];
                               if (/M/i.test(suffix)) types.push("MM");
-                              if (/[PN]/i.test(suffix)) types.push("NMM"); 
-                              
-                              if (types.length > 0) label = `5G`;
+                              if (/[PN]/i.test(suffix)) types.push("NMM");
+
+                              if (types.length > 0) label = `5G-${types.join("/")}`;
                             }
                             
                             return { techGen: label, nmsName: nmsName };

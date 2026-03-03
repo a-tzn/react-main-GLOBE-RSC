@@ -2,10 +2,15 @@ import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
 
 export default function AnalyticsDashboard({ data, activeFilter, onFilterChange }) {
 
-  const newSites = data.filter(r => r.matchStatus === 'NEW').length;
-  const removed = data.filter(r => r.matchStatus === 'REMOVED').length;
-  const mismatch = data.filter(r => r.matchStatus === 'MISMATCH').length;
-  const unchanged = data.filter(r => r.matchStatus === 'UNCHANGED').length;
+  const stats = data.reduce((acc, r) => {
+    acc[r.matchStatus] = (acc[r.matchStatus] || 0) + 1;
+    return acc;
+  }, {});
+
+  const newSites = stats.NEW || 0;
+  const removed = stats.REMOVED || 0;
+  const mismatch = stats.MISMATCH || 0;
+  const unchanged = stats.UNCHANGED || 0;
 
   const chartData = [
     { name: 'New', value: newSites, color: '#28a745' },
