@@ -3,10 +3,25 @@ import AnalyticsDashboard from '../Dashboard/AnalyticsDashboard';
 import MapVisualizer from '../Map/MapVisualizer';
 import globeLogoDark from '../assets/Globe_LogoW.png'; 
 import globeLogoLight from '../assets/Globe_LogoB.png'; 
+import checkDark from '../assets/checkDark.png';
+import checkLight from '../assets/checkLight.png';
+import verifiedDark from '../assets/verifiedDark.png';
+import verifiedLight from '../assets/verifiedLight.png';
+import glitterDark from '../assets/glitterDark.png';
+import glitterLight from '../assets/glitterLight.png';
+import removedDark from '../assets/removedDark.png';
+import removedLight from '../assets/removedLight.png';
+import warningDark from '../assets/warningDark.png';
+import warningLight from '../assets/warningLight.png';
+import search from '../assets/search.png';
+import fileDark from '../assets/fileDark.png';
+import fileLight from '../assets/fileLight.png';
+
 import * as XLSX from 'xlsx';
 
 import { provinces, cities, siteCodes, cityToProvinceMap, cityToBarangayMap, regionsToProvincesMap } from './MapDictionary/TelecomDictionaries';
 import './App.css';
+
 
 // ============================================================================
 // HELPER 1: TELECOM GEOGRAPHIC PARSER
@@ -334,7 +349,7 @@ export default function App() {
                 <div className="upload-group">
                   <span className="input-label">NMS CSV</span>
                   <div className="file-drop-area">
-                    <img src={isDarkMode ? '/fileDark.png' : '/fileLight.png'} className="upload-icon" alt="icon" />
+                    <img src={isDarkMode ? fileDark : fileLight} className="upload-icon" alt="icon" />
                     <span className="file-msg">{monitorFile1 ? monitorFile1.name : "Drag & drop or click"}</span>
                     <input className="file-input" type="file" accept=".csv" onChange={(e) => handleFileChange(e, setMonitorFile1)} />
                   </div>
@@ -342,13 +357,13 @@ export default function App() {
                 <div className="upload-group">
                   <span className="input-label">UDM CSV</span>
                   <div className="file-drop-area">
-                    <img src={isDarkMode ? '/fileDark.png' : '/fileLight.png'} className="upload-icon" alt="icon" />
+                    <img src={isDarkMode ? fileDark : fileLight} className="upload-icon" alt="icon" />
                     <span className="file-msg">{monitorFile2 ? monitorFile2.name : "Drag & drop or click"}</span>
                     <input className="file-input" type="file" accept=".csv" onChange={(e) => handleFileChange(e, setMonitorFile2)} />
                   </div>
                 </div>
                 <button className="btn primary-filled scan-btn full-width" onClick={handleScan} disabled={isLoading} style={{ marginTop: 'auto' }}>
-                  <img src="/search.png" alt="Scan" className="btn-icon" />
+                  <img src={search} alt="Scan" className="btn-icon" />
                   <span>{isLoading ? "Scanning..." : "Scan Files"}</span>
                 </button>
               </div>
@@ -417,31 +432,31 @@ export default function App() {
               
               <div className="cards-section">
                 <div className="stat-card total" onClick={() => setFilterStatus('ALL')} style={{cursor: 'pointer'}}>
-                  <img src={isDarkMode ? '/checkDark.png' : '/checkLight.png'} className="stat-icon" alt="Total" />
+                  <img src={isDarkMode ? checkDark : checkLight} className="stat-icon" alt="Total" />
                   <div className="stat-label">Total Validated</div>
                   <div className="stat-value">{results.length}</div>
                 </div>
 
                 <div className="stat-card unchanged" onClick={() => setFilterStatus('UNCHANGED')} style={{cursor: 'pointer'}}>
-                  <img src={isDarkMode ? '/verifiedDark.png' : '/verifiedLight.png'} className="stat-icon" alt="Verified" />
+                  <img src={isDarkMode ? verifiedDark : verifiedLight} className="stat-icon" alt="Verified" />
                   <div className="stat-label">Verified</div>
                   <div className="stat-value">{results.filter(r => r.matchStatus === 'UNCHANGED').length}</div>
                 </div>
 
                 <div className="stat-card new" onClick={() => setFilterStatus('NEW')} style={{cursor: 'pointer'}}>
-                  <img src={isDarkMode ? '/glitterDark.png' : '/glitterLight.png'} className="stat-icon" alt="New" />
+                  <img src={isDarkMode ? glitterDark : glitterLight} className="stat-icon" alt="New" />
                   <div className="stat-label">New In NMS</div>
                   <div className="stat-value">{results.filter(r => r.matchStatus === 'NEW').length}</div>
                 </div>
 
                 <div className="stat-card removed" onClick={() => setFilterStatus('REMOVED')} style={{cursor: 'pointer'}}>
-                  <img src={isDarkMode ? '/removedDark.png' : '/removedLight.png'} className="stat-icon" alt="Removed" />
+                  <img src={isDarkMode ? removedDark : removedLight} className="stat-icon" alt="Removed" />
                   <div className="stat-label">Missing (Removed)</div>
                   <div className="stat-value">{results.filter(r => r.matchStatus === 'REMOVED').length}</div>
                 </div>
 
                 <div className="stat-card mismatch" onClick={() => setFilterStatus('MISMATCH')} style={{cursor: 'pointer'}}>
-                  <img src={isDarkMode ? '/warningDark.png' : '/warningLight.png'} className="stat-icon" alt="Warning" />
+                  <img src={isDarkMode ? warningDark : warningLight} className="stat-icon" alt="Warning" />
                   <div className="stat-label">Discrepancy</div>
                   <div className="stat-value">{results.filter(r => r.matchStatus === 'MISMATCH').length}</div>
                 </div>
