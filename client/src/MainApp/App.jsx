@@ -22,6 +22,22 @@ import * as XLSX from 'xlsx';
 import { provinces, cities, siteCodes, cityToProvinceMap, cityToBarangayMap, regionsToProvincesMap } from './MapDictionary/TelecomDictionaries';
 import './App.css';
 
+const ICONS = {
+  checkDark,
+  checkLight,
+  verifiedDark,
+  verifiedLight,
+  glitterDark,
+  glitterLight,
+  removedDark,
+  removedLight,
+  warningDark,
+  warningLight,
+  search,
+  fileDark,
+  fileLight
+};
+
 
 // ============================================================================
 // HELPER 1: TELECOM GEOGRAPHIC PARSER
@@ -135,7 +151,7 @@ export default function App() {
   const [isDarkMode, setIsDarkMode] = useState(
     window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
   );
-
+  const [showPreviewMenu, setShowPreviewMenu] = useState(false);
   const [filterStatus, setFilterStatus] = useState('ALL');
   const [searchTerm, setSearchTerm] = useState("");
 
@@ -308,6 +324,17 @@ export default function App() {
     return baseCompare;
   });
 
+  const getPreviewLabel = (status) => {
+    switch(status) {
+      case 'ALL': return 'Storm Masterlist';
+      case 'NEW': return 'New Sites Only';
+      case 'REMOVED': return 'Removed Only';
+      case 'MISMATCH': return 'Mismatches Only';
+      case 'UNCHANGED': return 'Unchanged Only';
+      default: return status;
+    }
+  };
+
   return (
     <div className="app-container">
       {isLoading && <LoadingScreen logo={currentLogo} />}
@@ -430,44 +457,67 @@ export default function App() {
             <div className="dashboard-container">
               <AnalyticsDashboard data={results} activeFilter={filterStatus} onFilterChange={setFilterStatus} isDarkMode={isDarkMode} />
               
+              {/* THE SYNCED CARDS */}
               <div className="cards-section">
-                <div className="stat-card total" onClick={() => setFilterStatus('ALL')} style={{cursor: 'pointer'}}>
-                  <img src={isDarkMode ? checkDark : checkLight} className="stat-icon" alt="Total" />
+                <div className={`stat-card total ${filterStatus === 'ALL' ? 'active' : ''}`} onClick={() => setFilterStatus('ALL')} style={{cursor: 'pointer'}}>
+                  <img src={isDarkMode ? ICONS.checkDark : ICONS.checkLight} className="stat-icon" alt="Total" />
                   <div className="stat-label">Total Validated</div>
                   <div className="stat-value">{results.length}</div>
                 </div>
 
-                <div className="stat-card unchanged" onClick={() => setFilterStatus('UNCHANGED')} style={{cursor: 'pointer'}}>
-                  <img src={isDarkMode ? verifiedDark : verifiedLight} className="stat-icon" alt="Verified" />
+                <div className={`stat-card unchanged ${filterStatus === 'UNCHANGED' ? 'active' : ''}`} onClick={() => setFilterStatus('UNCHANGED')} style={{cursor: 'pointer'}}>
+                  <img src={isDarkMode ? ICONS.verifiedDark : ICONS.verifiedLight} className="stat-icon" alt="Verified" />
                   <div className="stat-label">Verified</div>
                   <div className="stat-value">{results.filter(r => r.matchStatus === 'UNCHANGED').length}</div>
                 </div>
 
-                <div className="stat-card new" onClick={() => setFilterStatus('NEW')} style={{cursor: 'pointer'}}>
-                  <img src={isDarkMode ? glitterDark : glitterLight} className="stat-icon" alt="New" />
+                <div className={`stat-card new ${filterStatus === 'NEW' ? 'active' : ''}`} onClick={() => setFilterStatus('NEW')} style={{cursor: 'pointer'}}>
+                  <img src={isDarkMode ? ICONS.glitterDark : ICONS.glitterLight} className="stat-icon" alt="New" />
                   <div className="stat-label">New In NMS</div>
                   <div className="stat-value">{results.filter(r => r.matchStatus === 'NEW').length}</div>
                 </div>
 
-                <div className="stat-card removed" onClick={() => setFilterStatus('REMOVED')} style={{cursor: 'pointer'}}>
-                  <img src={isDarkMode ? removedDark : removedLight} className="stat-icon" alt="Removed" />
+                <div className={`stat-card removed ${filterStatus === 'REMOVED' ? 'active' : ''}`} onClick={() => setFilterStatus('REMOVED')} style={{cursor: 'pointer'}}>
+                  <img src={isDarkMode ? ICONS.removedDark : ICONS.removedLight} className="stat-icon" alt="Removed" />
                   <div className="stat-label">Missing (Removed)</div>
                   <div className="stat-value">{results.filter(r => r.matchStatus === 'REMOVED').length}</div>
                 </div>
 
-                <div className="stat-card mismatch" onClick={() => setFilterStatus('MISMATCH')} style={{cursor: 'pointer'}}>
-                  <img src={isDarkMode ? warningDark : warningLight} className="stat-icon" alt="Warning" />
+                <div className={`stat-card mismatch ${filterStatus === 'MISMATCH' ? 'active' : ''}`} onClick={() => setFilterStatus('MISMATCH')} style={{cursor: 'pointer'}}>
+                  <img src={isDarkMode ? ICONS.warningDark : ICONS.warningLight} className="stat-icon" alt="Warning" />
                   <div className="stat-label">Discrepancy</div>
                   <div className="stat-value">{results.filter(r => r.matchStatus === 'MISMATCH').length}</div>
                 </div>
               </div>
             </div>
 
-            {/* --- ALWAYS SHOW THE TOOLBAR --- */}
+            {/* THE NEW PREVIEW DROPDOWN & SEARCH BAR */}
             <div className="table-toolbar">
-              <span className="table-label">
-                {filterStatus === 'ALL' ? 'Detailed Report' : `Filtered View: ${filterStatus}`}
-              </span>
+              <div 
+                className="preview-dropdown-container" 
+                onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setShowPreviewMenu(false); }} 
+                tabIndex={-1}
+              >
+                <button 
+                  className="preview-toggle-btn" 
+                  onClick={() => setShowPreviewMenu(!showPreviewMenu)}
+                  disabled={results.length === 0}
+                  style={{ opacity: results.length === 0 ? 0.5 : 1, cursor: results.length === 0 ? 'not-allowed' : 'pointer' }}
+                >
+                  Preview Data: <span style={{fontWeight: 'bold', color: 'var(--brand-purple)'}}>{getPreviewLabel(filterStatus)}</span> ▾
+                </button>
+                
+                {showPreviewMenu && (
+                  <div className="preview-menu">
+                    <button onClick={() => { setFilterStatus('ALL'); setShowPreviewMenu(false); }}>Storm Masterlist</button>
+                    <button onClick={() => { setFilterStatus('NEW'); setShowPreviewMenu(false); }}>New Sites Only</button>
+                    <button onClick={() => { setFilterStatus('REMOVED'); setShowPreviewMenu(false); }}>Removed Only</button>
+                    <button onClick={() => { setFilterStatus('MISMATCH'); setShowPreviewMenu(false); }}>Mismatches Only</button>
+                    <button onClick={() => { setFilterStatus('UNCHANGED'); setShowPreviewMenu(false); }}>Unchanged Only</button>
+                  </div>
+                )}
+              </div>
+
               <input 
                 type="text" 
                 className="search-bar" 
@@ -480,7 +530,7 @@ export default function App() {
                   cursor: results.length === 0 ? 'not-allowed' : 'text' 
                 }}
               />
-            </div>
+            </div>  {/* end toolbar */}
 
             {/* --- CONDITIONALLY SHOW TABLE OR PLACEHOLDER --- */}
             <div className="output-box">
