@@ -6,15 +6,18 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:gas": "node build-gas.js",
     "lint": "eslint .",
     "preview": "vite preview"
   },
   "dependencies": {
+    "lucide-react": "^0.577.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-leaflet-cluster": "^4.0.0",
     "react-router-dom": "^7.13.1",
-    "recharts": "^3.7.0",
+    "react-window": "^1.8.10",
+    "recharts": "^3.8.0",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {

@@ -1,0 +1,61 @@
+.themed-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 16px;
+  border-radius: 99px;
+  font-weight: bold;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  border: 1px solid;
+}
+
+.badge-danger {
+  background-color: var(--badge-danger-bg);
+  color: var(--badge-danger-text);
+  border-color: var(--badge-danger-border);
+}
+
+.badge-danger:hover {
+  transform: scale(1.1);
+  background-color: var(--color-danger);
+  color: white;
+  box-shadow: 0 4px 12px rgba(224, 36, 36, 0.4);
+}
+
+.badge-success {
+  background-color: rgba(40, 167, 69, 0.15);
+  color: var(--color-success);
+  border-color: rgba(40, 167, 69, 0.3);
+}
+
+.badge-success:hover {
+  transform: scale(1.05);
+  background-color: rgba(40, 167, 69, 0.3);
+  box-shadow: 0 2px 8px rgba(40, 167, 69, 0.2);
+}
+
+.badge-info {
+  background-color: rgba(0, 123, 255, 0.15);
+  color: var(--color-info);
+  border-color: rgba(0, 123, 255, 0.3);
+}
+
+.badge-info:hover {
+  transform: scale(1.05);
+  background-color: rgba(0, 123, 255, 0.3);
+  box-shadow: 0 2px 8px rgba(0, 123, 255, 0.2);
+}
+
+.badge-warning {
+  background-color: rgba(217, 119, 6, 0.15);
+  color: var(--color-warning);
+  border-color: rgba(217, 119, 6, 0.3);
+}
+
+.badge-warning:hover {
+  transform: scale(1.05);
+  background-color: rgba(217, 119, 6, 0.3);
+  box-shadow: 0 2px 8px rgba(217, 119, 6, 0.2);
+}

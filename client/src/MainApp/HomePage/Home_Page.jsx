@@ -25,6 +25,10 @@ function HomePage() {
           <img src={globeLogo} className="logo" alt="Globe Logo"/>
         </div>
 
+        <div className="textSection">
+          <h2 className="title">REGIONAL SURVEILLANCE CENTER</h2>
+        </div>
+
         <div className="dropdown">
           <button 
             className={`dropdownBtn ${open ? "active" : ""}`}

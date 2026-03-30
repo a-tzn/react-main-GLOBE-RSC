@@ -164,6 +164,13 @@ body {
   animation: fadeText 2s infinite;
 }
 
+.textSection {
+  text-align: center;
+  color: #554f4f;
+  font-family: monospace;
+  font-size: 1rem;
+}
+
 /* ------------------- ANIMATIONS ------------------- */
 @keyframes spin {
   0% { transform: rotate(0deg); }

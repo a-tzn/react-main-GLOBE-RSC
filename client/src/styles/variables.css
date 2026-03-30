@@ -13,9 +13,28 @@
   --bg-input: rgba(255, 255, 255, 0.6);
   --bg-hover: rgba(255, 255, 255, 0.8);
   --bg-active: #e8f0fe;
+  --bg-primary: rgba(255, 255, 255, 0.8);
+  --bg-secondary: rgba(255, 255, 255, 0.4);
   --overlay-bg: rgba(197, 201, 218, 0.8);
   --brand-purple: #7033ff;
   --brand-gradient: linear-gradient(135deg, #7033ff 0%, #a855f7 100%);
+
+  /* === SEMANTIC COLOR TOKENS === */
+  --color-success: #28a745;      /* Tech: 5G, status: good */
+  --color-info: #007bff;         /* Tech: 4G, informational */
+  --color-warning: #d97706;      /* Mismatch status */
+  --color-danger: #e02424;       /* Error states, drill-down */
+  --color-danger-light: #f02849; /* Transport severity */
+  
+  /* === INTERACTIVE ELEMENT TOKENS === */
+  --btn-scan-bg: #1a73e8;
+  --btn-primary-gradient: linear-gradient(135deg, rgba(112, 51, 255, 0.8) 0%, rgba(138, 92, 246, 0.8) 100%);
+  --input-focus-glow: rgba(112, 51, 255, 0.15);
+  
+  /* === BADGE TOKENS === */
+  --badge-danger-bg: #fde8e8;
+  --badge-danger-text: #e02424;
+  --badge-danger-border: rgba(224, 36, 36, 0.2);
 
   --text-primary: #1e293b;
   --text-secondary: #64748b;
@@ -39,12 +58,28 @@ body.dark-mode {
   --bg-sidebar: #111c44;
   --bg-content: #0b1437;
   --bg-card: rgba(17, 28, 68, 0.4);
-  --bg-input: #111c44;
+  --bg-input: #1a2332;
   --bg-hover: #1b2559;
   --bg-active: #2b3674;
+  --bg-primary: #111c44;
+  --bg-secondary: #0b1437;
   --overlay-bg: rgba(11, 20, 55, 0.8);
   --brand-purple: #8b5cf6;
   --brand-gradient: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%);
+  
+  /* === SEMANTIC COLOR TOKENS (dark overrides) === */
+  --color-success: #10b981;      /* Brighter green for dark mode */
+  --color-info: #3b82f6;         /* Brighter blue for dark mode */
+  --color-warning: #f59e0b;      /* Amber instead of brown */
+  --color-danger: #ef4444;       /* Bright red for dark mode */
+  --color-danger-light: #f87171; /* Lighter red */
+  
+  /* === INTERACTIVE ELEMENT TOKENS === */
+  --btn-scan-bg: #0f2d61;
+  --badge-danger-bg: rgba(224, 36, 36, 0.15);
+  --badge-danger-text: #ef4444;
+  --badge-danger-border: rgba(239, 68, 68, 0.3);
+
   --text-primary: #ffffff;
   --text-secondary: #a3aed1;
   --text-inverse: #ffffff;

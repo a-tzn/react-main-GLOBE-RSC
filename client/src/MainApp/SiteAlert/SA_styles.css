@@ -1,6 +1,4 @@
-@import "../../styles/variables.css";
-/* bring in the shared storm‑masterlist rules so both dashboards stay in sync */
-@import "../StormMasterList/SM_styles.css";
+@import "../../styles/global_styles.css";
 
 /* container used by App.jsx when rendering the Site Alert page */
 .sadashboard{
@@ -12,9 +10,340 @@
     color: var(--text-primary); /* use theme colors */
 }
 
+body.dark-mode .sadashboard {
+    color: #ffffff;
+}
+
 .scan-btn {
     /* push the button slightly below the upload box instead of huge bottom gap */
     margin-top: 1.5rem;
     /* remove any accidental huge bottom margin from previous edits */
     margin-bottom: 0;
+    /* Match StormMasterList scan button style */
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+    background-color: var(--btn-scan-bg) !important;
+}
+
+.btn-icon {
+    width: 18px;
+    height: 18px;
+    object-fit: contain;
+    filter: brightness(0) invert(1);
+}
+
+.scan-btn:hover .btn-icon {
+    transform: scale(1.1);
+    transition: transform 0.2s ease;
+}
+
+body.dark-mode .scan-btn {
+    background-color: var(--btn-scan-bg) !important;
+}
+
+.search-bar {
+  padding: 10px 20px;
+  border: 1px solid transparent;
+  background-color: var(--bg-input) !important;
+  color: var(--text-primary);
+  border-radius: 20px;
+  font-size: 0.9rem;
+  width: 250px;
+  outline: none;
+  transition: all 0.2s;
+}
+
+.table-toolbar .search-bar {
+  color: var(--text-primary);
+  border-color: var(--border-light);
+  background-color: var(--bg-input);
+}
+
+body.dark-mode .table-toolbar .search-bar {
+  color: var(--text-primary);
+  background-color: var(--bg-input);
+  border-color: var(--border-light);
+}
+
+.search-bar:focus {
+  border-color: var(--brand-purple);
+  box-shadow: 0 0 0 3px rgba(112, 51, 255, 0.15);
+}
+
+body.dark-mode .search-bar {
+  background-color: var(--bg-input);
+  color: var(--text-primary);
+  border-color: var(--border-light);
+}
+
+.primary-filled {
+    background: var(--btn-primary-gradient), rgba(255, 255, 255, 0.1);
+    color: white;
+    box-shadow: 0 4px 15px rgba(112, 51, 255, 0.4);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+.primary-filled:hover {
+    box-shadow: 0 6px 20px rgba(112, 51, 255, 0.4);
+    transform: translateY(-1px);
+}
+
+body.dark-mode .primary-filled:disabled {
+    background: rgba(0, 0, 0, 0.1);
+    box-shadow: none;
+    transform: none;
+    cursor: not-allowed;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.primary-outline {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text-primary);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+.primary-outline:hover {
+    border-color: var(--brand-purple);
+    color: var(--brand-purple);
+}
+
+body.dark-mode .btn {
+    background: rgba(0, 0, 0, 0.2);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: var(--text-primary);
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+}
+
+.full-width {
+    width: 100%;
+}
+
+/* Make header buttons consistent width */
+.header-actions .btn {
+    min-width: 120px;
+}
+
+
+.file-input {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    cursor: pointer;
+}
+
+.file-drop-area {
+  /* existing styles */
+    border: 10px dashed #000000 !important;
+}
+
+/* Sidebar Toggle Button */
+.sidebar-toggle-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background-color 0.2s ease;
+  outline: none;
+}
+
+.sidebar-toggle-btn:hover {
+  background: var(--bg-hover);
+}
+
+.sidebar-toggle-btn:focus {
+  box-shadow: 0 0 0 2px rgba(66, 153, 225, 0.5);
+}
+
+.sidebar-toggle-btn svg {
+  transition: transform 0.3s ease;
+}
+
+.sidebar-toggle-btn svg.rotated {
+  transform: rotate(180deg);
+}
+
+/* Override StormMasterList's .content-area for SiteAlert only */
+.sadashboard .content-area {
+  margin-left: 0;
+  margin-right: 0;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.sadashboard .output-card {
+  width: 100%;
+  box-sizing: border-box;
+  margin-left: 0;
+  margin-right: 0;
+}
+
+.sadashboard .main-layout {
+  padding-left: 30px;
+  padding-right: 30px;
+}
+
+/* Ensure the data-input-section stretches children */
+.data-input-section {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  padding: 1.5rem 1.5rem 1.5rem 1.5rem;
+  box-sizing: border-box;
+}
+
+.data-input-section .full-width {
+  width: 100%;
+  align-self: stretch;
+}
+
+/* 🚀 Drill-down badge styling */
+.drill-down-badge {
+  display: inline-flex; 
+  align-items: center; 
+  justifyContent: center; 
+  padding: 6px 16px; 
+  border-radius: 99px; 
+  background-color: var(--badge-danger-bg); 
+  color: var(--badge-danger-text); 
+  border: 1px solid var(--badge-danger-border);
+  font-weight: bold;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.drill-down-badge:hover {
+  transform: scale(1.1);
+  background-color: var(--color-danger);
+  color: white;
+  box-shadow: 0 4px 12px rgba(224, 36, 36, 0.4);
+}
+
+body.dark-mode .drill-down-badge {
+  background-color: var(--badge-danger-bg);
+}
+
+body.dark-mode .drill-down-badge:hover {
+  background-color: var(--color-danger);
+  color: white;
+}
+
+.theme-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(18, 21, 48, 0.66);
+  backdrop-filter: blur(6px);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 10000;
+}
+
+.theme-modal-card {
+  width: min(520px, calc(100% - 40px));
+  background: var(--bg-primary);
+  border: 1px solid var(--border-light);
+  border-radius: 24px;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.22);
+  overflow: hidden;
+}
+
+.theme-modal-header {
+  padding: 20px 24px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.theme-modal-header h3 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 1.1rem;
+}
+
+.theme-modal-close {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 1.25rem;
+  padding: 8px;
+  border-radius: 50%;
+}
+
+.theme-modal-body {
+  padding: 20px 24px;
+  color: var(--text-primary);
+  line-height: 1.6;
+}
+
+.theme-modal-body p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.theme-modal-input {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  margin-top: 16px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid var(--border-light);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  outline: none;
+  font-size: 0.95rem;
+}
+
+.theme-modal-actions {
+  padding: 18px 24px 24px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.theme-modal-button {
+  min-width: 100px;
+  padding: 12px 18px;
+  border-radius: 16px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  font-weight: 700;
+  transition: all 0.2s ease;
+}
+
+.theme-modal-button.primary {
+  background: var(--brand-purple);
+  color: white;
+  border-color: transparent;
+}
+
+.theme-modal-button.primary:hover {
+  transform: translateY(-1px);
+}
+
+.theme-modal-button.secondary {
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border-color: var(--border-light);
+}
+
+.theme-modal-button.secondary:hover {
+  background: var(--bg-hover);
+}
+
+body.dark-mode .drill-down-badge:hover {
+  background-color: var(--color-danger);
+  color: white;
 }

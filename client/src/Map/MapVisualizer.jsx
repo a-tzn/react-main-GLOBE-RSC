@@ -48,7 +48,7 @@ const createCustomClusterIcon = (cluster) => {
   });
 };
 
-function MapRecenter({ lat, lng, zoom, expanded, filteredResults = [], selectedSite = {} }) {
+function MapRecenter({ expanded, filteredResults = [], selectedSite = {} }) {
   const map = useMap();
   
   // Memoize bounds to prevent fitBounds flooding
@@ -107,9 +107,6 @@ export default function MapVisualizer({ selectedSite = {}, filteredResults = [],
     <MapContainer center={[centreLat, centreLng]} zoom={currentZoom} zoomControl={isExpanded} style={{ height: "100%", width: "100%", zIndex: 1 }} preferCanvas={true}>
       <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
       <MapRecenter
-         lat={centreLat}
-         lng={centreLng}
-         zoom={currentZoom}
          expanded={isExpanded}
          filteredResults={filteredResults}
          selectedSite={selectedSite}

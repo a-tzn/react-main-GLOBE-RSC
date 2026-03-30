@@ -3,6 +3,8 @@
     "vite-plugin-singlefile": "^2.3.0"
   },
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "react-window": "^2.2.7",
     "recharts": "^3.7.0"
   }
 }

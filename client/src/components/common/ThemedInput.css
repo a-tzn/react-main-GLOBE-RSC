@@ -1,0 +1,27 @@
+.themed-input {
+  padding: 10px 20px;
+  border: 1px solid transparent;
+  background-color: var(--bg-input);
+  color: var(--text-primary);
+  border-radius: var(--radius-btn);
+  font-size: 0.9rem;
+  width: 250px;
+  outline: none;
+  transition: all 0.2s ease;
+  font-family: inherit;
+}
+
+.themed-input::placeholder {
+  color: var(--text-secondary);
+  opacity: 1;
+}
+
+.themed-input:focus {
+  border-color: var(--brand-purple);
+  box-shadow: 0 0 0 3px var(--input-focus-glow);
+}
+
+.themed-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
