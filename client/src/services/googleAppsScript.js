@@ -33,6 +33,68 @@ function promisifyGasCall(functionName, ...args) {
 // DEVELOPMENT API ENDPOINT
 // UPDATE THIS URL when you create a new GAS deployment
 const API_BASE_URL = 'https://script.google.com/a/macros/umindanao.edu.ph/s/AKfycbwZbMC8pCRlYw_uORG-c55zSdNVKfZeRdxPH18sefsRi5XUg_D5CkMoz_HZ4PMWFXc7ZA/exec';
+const USER_INFO_CACHE_KEY = 'gas_user_info_cache_v1';
+const USER_INFO_CACHE_TTL_MS = 30 * 60 * 1000;
+
+let userInfoMemoryCache = null;
+let userInfoInFlight = null;
+
+function getSessionStorage() {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
+function isValidCachedUser(payload) {
+  return Boolean(
+    payload &&
+      typeof payload === 'object' &&
+      payload.timestamp &&
+      payload.data &&
+      (Date.now() - payload.timestamp) < USER_INFO_CACHE_TTL_MS
+  );
+}
+
+function readCachedUserInfoInternal() {
+  if (isValidCachedUser(userInfoMemoryCache)) {
+    return userInfoMemoryCache.data;
+  }
+
+  const storage = getSessionStorage();
+  if (!storage) return null;
+
+  try {
+    const raw = storage.getItem(USER_INFO_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!isValidCachedUser(parsed)) {
+      storage.removeItem(USER_INFO_CACHE_KEY);
+      return null;
+    }
+    userInfoMemoryCache = parsed;
+    return parsed.data;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedUserInfoInternal(userData) {
+  if (!userData || typeof userData !== 'object') return;
+  const payload = { timestamp: Date.now(), data: userData };
+  userInfoMemoryCache = payload;
+
+  const storage = getSessionStorage();
+  if (!storage) return;
+
+  try {
+    storage.setItem(USER_INFO_CACHE_KEY, JSON.stringify(payload));
+  } catch {
+    // no-op: best-effort cache only
+  }
+}
 
 async function postApi(payload) {
   const response = await fetch(API_BASE_URL, {
@@ -173,20 +235,41 @@ export function deleteUploadedData(dataId) {
  * Get current user information
  */
 export function getUserInfo() {
-  const runner = getGoogleScriptRunner();
-
-  if (runner) {
-    return promisifyGasCall('getUserInfo')
-      .then((result) => {
-        if (!result.success) throw new Error(result.error || 'Failed to get user info');
-        return result.data;
-      });
+  const cachedUserInfo = readCachedUserInfoInternal();
+  if (cachedUserInfo) {
+    return Promise.resolve(cachedUserInfo);
   }
 
-  return postApi({ action: 'getUserInfo' }).then((data) => {
-    if (!data.success) throw new Error(data.error || 'Failed to get user info');
-    return data.data;
-  });
+  if (userInfoInFlight) {
+    return userInfoInFlight;
+  }
+
+  const runner = getGoogleScriptRunner();
+  const request = runner
+    ? promisifyGasCall('getUserInfo')
+        .then((result) => {
+          if (!result.success) throw new Error(result.error || 'Failed to get user info');
+          return result.data;
+        })
+    : postApi({ action: 'getUserInfo' }).then((data) => {
+        if (!data.success) throw new Error(data.error || 'Failed to get user info');
+        return data.data;
+      });
+
+  userInfoInFlight = request
+    .then((userData) => {
+      writeCachedUserInfoInternal(userData);
+      return userData;
+    })
+    .finally(() => {
+      userInfoInFlight = null;
+    });
+
+  return userInfoInFlight;
+}
+
+export function getCachedUserInfo() {
+  return readCachedUserInfoInternal();
 }
 
 /**

@@ -71,11 +71,6 @@ body.dark-mode .table-toolbar .search-bar {
   box-shadow: 0 0 0 3px rgba(112, 51, 255, 0.15);
 }
 
-body.dark-mode .search-bar {
-  background-color: var(--bg-input);
-  color: var(--text-primary);
-  border-color: var(--border-light);
-}
 
 .primary-filled {
     background: var(--btn-primary-gradient), rgba(255, 255, 255, 0.1);
@@ -370,4 +365,19 @@ body.dark-mode .drill-down-badge:hover {
 }
 .user-history-menu button:last-child {
   border-bottom: none !important;
+}
+
+/* Supercharge the Modals for depth */
+body.dark-mode .map-modal-content {
+  background: var(--bg-primary);
+  border: 1px solid rgba(255, 255, 255, 0.08); /* Faint highlight edge */
+  box-shadow: 
+    0 40px 80px rgba(0, 0, 0, 0.8), /* Huge soft shadow behind */
+    inset 0 1px 1px rgba(255, 255, 255, 0.1); /* Inner rim light */
+}
+
+/* Make the Modal Headers look like a unified command bar */
+body.dark-mode .map-modal-header {
+  background: var(--bg-sidebar); /* Replaces the purple gradient with stealth dark */
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }

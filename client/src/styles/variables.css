@@ -40,6 +40,7 @@
   --text-secondary: #64748b;
   --text-inverse: #ffffff;
   --text-sidebar-muted: rgba(30, 41, 59, 0.6);
+  --text-whitesmoke: var(--text-whitesmoke);
 
   --border-color: rgba(255, 255, 255, 0.6);
   --border-light: rgba(255, 255, 255, 0.3);
@@ -64,7 +65,7 @@ body.dark-mode {
   --bg-primary: #111c44;
   --bg-secondary: #0b1437;
   --overlay-bg: rgba(11, 20, 55, 0.8);
-  --brand-purple: #8b5cf6;
+  --brand-purple: #1a3999;
   --brand-gradient: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%);
   
   /* === SEMANTIC COLOR TOKENS (dark overrides) === */

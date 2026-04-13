@@ -1,4 +1,5 @@
 import React from 'react';
+import useNetworkPing from '../../hooks/useNetworkPing';
 
 export function DashboardHeaderActions({
   lastModifiedText,
@@ -20,6 +21,10 @@ export function DashboardHeaderActions({
   recentItems = [],
   onLoadRecentItem
 }) {
+  const { ping, status } = useNetworkPing();
+  const pingColor = status === 'good' ? '#28a745' : status === 'fair' ? '#f59e0b' : '#ef4444';
+  const pingText = status === 'offline' ? 'Offline' : `${ping} ms`;
+
   return (
     <div className="header-actions" style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', paddingLeft: '16px' }}>
       <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', minWidth: 0, maxWidth: '280px' }}>
@@ -34,6 +39,34 @@ export function DashboardHeaderActions({
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 0, flex: 1 }} />
 
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <div
+          title={status === 'offline' ? 'Connection appears offline' : `Network latency: ${ping}ms`}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            padding: '6px 10px',
+            borderRadius: '999px',
+            background: 'var(--bg-input)',
+            border: '1px solid var(--border-light)',
+            color: 'var(--text-secondary)',
+            fontSize: '0.75rem',
+            minWidth: '88px',
+            justifyContent: 'center'
+          }}
+        >
+          <span
+            style={{
+              width: '8px',
+              height: '8px',
+              borderRadius: '50%',
+              backgroundColor: pingColor,
+              boxShadow: `0 0 8px ${pingColor}`
+            }}
+          />
+          <span style={{ lineHeight: 1 }}>{pingText}</span>
+        </div>
+
         <div className="export-dropdown-container" onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) onCloseExport?.(); }} tabIndex={-1} style={{ position: 'relative' }}>
           <button className="btn theme-toggle" onClick={onToggleExport} disabled={exportDisabled} style={{
             width: '36px', height: '36px', borderRadius: '50%', padding: 0,
@@ -176,4 +209,3 @@ export function DashboardHeaderActions({
 }
 
 export default DashboardHeaderActions;
-

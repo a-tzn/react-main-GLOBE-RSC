@@ -1,6 +1,8 @@
-import { useState, useMemo, useEffect, useRef, useDeferredValue } from 'react';
+import { useState, useMemo, useEffect, useRef, useDeferredValue, useTransition } from 'react';
+import localforage from 'localforage';
 import useDarkMode from '../../hooks/useDarkMode';
 import useSearchDebounce from '../../hooks/useSearchDebounce';
+import useSmartProgress from '../../hooks/useSmartProgress';
 import AnalyticsDashboard from '../../Dashboard/AnalyticsDashboard';
 import MapVisualizer from '../../Map/MapVisualizer';
 import globeLogoDark from '../../assets/Globe_LogoW.png';
@@ -22,8 +24,6 @@ import fileLight from '../../assets/fileLight.png';
 import { useNavigate } from "react-router-dom";
 import { FixedSizeList as List } from 'react-window';
 
-import { parseLocationData, getShortRegionByProvince } from '../../utils/telecom';
-import { cityToProvinceMap } from '../MapDictionary/TelecomDictionaries';
 import DashboardLayout from '../../components/DashboardLayout';
 import DashboardHeaderActions from '../../components/common/DashboardHeaderActions';
 import useStormMasterlistProcessor from '../../features/storm-masterlist/hooks/useStormMasterlistProcessor';
@@ -32,9 +32,9 @@ import {
   storeUploadedData,
   getUserUploadedDataSummary,
   getUploadedDataById,
-  getLatestUserUploadedData,
   getUserInfo,
-  getLastModifiedInfo
+  getLastModifiedInfo,
+  getCachedUserInfo
 } from '../../services/googleAppsScript';
 import '../../styles/Dashboard_styles.css';
 import './SM_styles.css';
@@ -62,13 +62,37 @@ export default function SMDashboard() {
   const [isAiLoadingFallback, setIsAiLoadingFallback] = useState(false);
   const isAiLoadingVisible = isAiLoading || isAiLoadingFallback;
   const pageIsLoading = isLoading || isNavigating || isStoredDataLoading || isInitialDataLoading;
-  const CACHE_KEY = 'storm_masterlist_cache_v1';
+  const globalDatabaseSyncing = isInitialDataLoading || isRefreshingSavedData || isStoredDataLoading;
+  const databaseProgress = useSmartProgress(globalDatabaseSyncing);
+  const historyLoadProgress = useSmartProgress(isStoredDataLoading);
+  const cacheKey = 'storm_masterlist_cache_v1';
+  const cacheMetaKey = `${cacheKey}_meta`;
+  const cacheDataKey = `${cacheKey}_full`;
   const CACHE_TTL_MS = 5 * 60 * 1000;
+
+  const buildStormSummaryStats = (rows) => {
+    const safeRows = Array.isArray(rows) ? rows : [];
+    const siteMap = new Map();
+    safeRows.forEach((row) => {
+      const key = row?.baseLocation;
+      if (key && !siteMap.has(key)) siteMap.set(key, row?.matchStatus);
+    });
+
+    const statusValues = Array.from(siteMap.values());
+    return {
+      total: siteMap.size,
+      unchanged: statusValues.filter((status) => status === 'UNCHANGED').length,
+      new: statusValues.filter((status) => status === 'NEW').length,
+      removed: statusValues.filter((status) => status === 'REMOVED').length,
+      mismatch: statusValues.filter((status) => status === 'MISMATCH').length
+    };
+  };
 
   // Backend integration state
   const [storedData, setStoredData] = useState([]);
-  const [userInfo, setUserInfo] = useState(null);
+  const [userInfo, setUserInfo] = useState(() => getCachedUserInfo());
   const [lastModifiedInfo, setLastModifiedInfo] = useState(null);
+  const [persistedSummaryStats, setPersistedSummaryStats] = useState(null);
 
   const [showPreviewMenu, setShowPreviewMenu] = useState(false);
   const [filterStatus, setFilterStatus] = useState('ALL');
@@ -81,6 +105,7 @@ export default function SMDashboard() {
   const [workerFilteredIndices, setWorkerFilteredIndices] = useState([]);
   const [workerReady, setWorkerReady] = useState(false);
   const [isWorkerBusy, setIsWorkerBusy] = useState(false);
+  const [isFilterPending, startFilterTransition] = useTransition();
 
   const [aiCommand, setAiCommand] = useState("");
   const [showAiPanel, setShowAiPanel] = useState(false);
@@ -119,46 +144,63 @@ export default function SMDashboard() {
     closeThemeModal();
   };
 
+  // Glass Toast Notification State
+  const [toast, setToast] = useState({ visible: false, title: '', message: '', type: 'info', isClosing: false });
+  const toastTimeoutRef = useRef(null);
+  const toastStartTimeRef = useRef(0);
+  const toastRemainingTimeRef = useRef(5000);
+
+  const showToast = (title, message, type = 'info') => {
+    setToast({ visible: true, title, message, type, isClosing: false });
+    toastRemainingTimeRef.current = 5000;
+    toastStartTimeRef.current = Date.now();
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    toastTimeoutRef.current = setTimeout(() => closeToast(), 5000);
+  };
+
+  const closeToast = () => {
+    setToast(prev => ({ ...prev, isClosing: true }));
+    setTimeout(() => {
+      setToast(prev => ({ ...prev, visible: false, isClosing: false }));
+    }, 500); 
+  };
+
+  const handleToastMouseEnter = () => {
+    if (toast.isClosing) return;
+    if (toastTimeoutRef.current) {
+      clearTimeout(toastTimeoutRef.current);
+      const elapsed = Date.now() - toastStartTimeRef.current;
+      toastRemainingTimeRef.current = Math.max(0, toastRemainingTimeRef.current - elapsed);
+    }
+  };
+
+  const handleToastMouseLeave = () => {
+    if (toast.isClosing) return;
+    toastStartTimeRef.current = Date.now();
+    toastTimeoutRef.current = setTimeout(() => closeToast(), toastRemainingTimeRef.current);
+  };
+
+  const [loadedDataSource, setLoadedDataSource] = useState(null);
+  const [isTableRevealActive, setIsTableRevealActive] = useState(false);
+  const wasDatabaseSyncingRef = useRef(false);
+
   const applyStoredProcessedData = (item) => {
     if (!item) return;
     const safeProcessedData = Array.isArray(item.processedData)
       ? item.processedData.filter((row) => row && typeof row === 'object')
       : [];
     setResults(safeProcessedData);
+    setPersistedSummaryStats(item.metadata?.summaryStats || null);
     setFilterStatus('ALL');
     setSelectedRowDetails(null);
     setShowHistoryPanel(false);
+    
+    setLoadedDataSource({
+      date: new Date(item.uploadDate || Date.now()).toLocaleDateString(),
+      time: new Date(item.uploadDate || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      engineerName: item.metadata?.engineerName || 'Unknown User'
+    });
   };
-
-    const readCache = () => {
-        try {
-          const raw = localStorage.getItem(CACHE_KEY);
-          if (!raw) return null;
-          const cached = JSON.parse(raw);
-          if (!cached?.timestamp || (Date.now() - cached.timestamp) > CACHE_TTL_MS) return null;
-          return cached;
-        } catch {
-          return null;
-        }
-      };
-
-      const writeCache = (payload) => {
-        try {
-          const cachePayload = { ...payload };
-          if (cachePayload.latestStoredData && Array.isArray(cachePayload.latestStoredData.processedData)) {
-            const slimProcessedData = cachePayload.latestStoredData.processedData.map((item) => {
-              const { rawRows, ...rest } = item || {};
-              return rest;
-            });
-            cachePayload.latestStoredData = { ...cachePayload.latestStoredData, processedData: slimProcessedData };
-          }
-          localStorage.setItem(CACHE_KEY, JSON.stringify({ ...cachePayload, timestamp: Date.now() }));
-        } catch (error) {
-          console.warn("SM Cache Write Failed (Likely Exceeded 5MB limit):", error);
-          // Failsafe: Clear the bloated cache so it doesn't corrupt the app on next load
-          localStorage.removeItem(CACHE_KEY);
-        }
-      };
   
   const [chatHistory, setChatHistory] = useState([
     { sender: 'ai', text: "Hello Adrian! I'm your veRiSynC AI Copilot. Ask me to list sites or update remarks!" }
@@ -172,11 +214,50 @@ export default function SMDashboard() {
 
   const currentLogo = isDarkMode ? globeLogoDark : globeLogoLight;
 
+  const saveDashboardCache = async ({
+    nextUserInfo = null,
+    nextStoredData = [],
+    nextLastModifiedInfo = null,
+    latestStoredData = null,
+    latestPreviewData = [],
+    nextSummaryStats = null
+  }) => {
+    const timestamp = Date.now();
+    await localforage.setItem(cacheMetaKey, {
+      userInfo: nextUserInfo,
+      storedData: nextStoredData,
+      lastModifiedInfo: nextLastModifiedInfo,
+      latestPreviewData: Array.isArray(latestPreviewData) ? latestPreviewData : [],
+      persistedSummaryStats: nextSummaryStats,
+      timestamp
+    });
+
+    if (latestStoredData) {
+      await localforage.setItem(cacheDataKey, {
+        latestStoredData,
+        timestamp
+      });
+    }
+  };
+
   useEffect(() => {
     if (sidebarTopRef.current) {
       sidebarTopRef.current.scrollLeft = 0;
     }
   }, [showHistoryPanel, selectedRowDetails]);
+
+  useEffect(() => {
+    const isDatabaseSyncing = isInitialDataLoading || isStoredDataLoading || isRefreshingSavedData;
+    if (wasDatabaseSyncingRef.current && !isDatabaseSyncing && results.length > 0) {
+      setIsTableRevealActive(true);
+      const timeout = setTimeout(() => setIsTableRevealActive(false), 360);
+      return () => clearTimeout(timeout);
+    }
+    if (isDatabaseSyncing) {
+      setIsTableRevealActive(false);
+    }
+    wasDatabaseSyncingRef.current = isDatabaseSyncing;
+  }, [isInitialDataLoading, isStoredDataLoading, isRefreshingSavedData, results.length]);
 
   useEffect(() => {
     if (!listContainerRef.current || typeof ResizeObserver === 'undefined') return;
@@ -242,55 +323,125 @@ export default function SMDashboard() {
       setWorkerReady(false);
     };
   }, []);
-
- // Load user info and stored data on mount
+  // Load user info and stored data on mount
   useEffect(() => {
+    let isMounted = true;
+    const bootLoaderTimeout = setTimeout(() => {
+      if (isMounted) setIsInitialDataLoading(false);
+    }, 1500);
+
     const loadUserData = async () => {
-      // STEP 1: INSTANT LOAD FROM CACHE (Stale data)
-      const cached = readCache();
-      if (cached) {
-        setUserInfo(cached.userInfo || null);
-        setStoredData(cached.storedData || []);
-        setLastModifiedInfo(cached.lastModifiedInfo || null);
-        if (cached.latestStoredData) {
-          applyStoredProcessedData(cached.latestStoredData);
+      // 1. INSTANT CACHE LOAD (IndexedDB - 0 Seconds)
+      let hasFreshCache = false;
+      const summaryPromise = getUserUploadedDataSummary(10, 'storm-masterlist', true);
+      const lastModifiedPromise = getLastModifiedInfo('storm-masterlist');
+      const userInfoPromise = getUserInfo().catch((err) => {
+        console.warn('Failed to refresh user info:', err);
+        return null;
+      });
+
+      try {
+        const cachedMeta = await localforage.getItem(cacheMetaKey);
+        const isFresh = Boolean(cachedMeta?.timestamp) && (Date.now() - cachedMeta.timestamp) < CACHE_TTL_MS;
+
+        if (isFresh && isMounted) {
+          hasFreshCache = true;
+          setUserInfo(cachedMeta.userInfo || getCachedUserInfo() || null);
+          setStoredData(cachedMeta.storedData || []);
+          setLastModifiedInfo(cachedMeta.lastModifiedInfo || null);
+          setPersistedSummaryStats(cachedMeta.persistedSummaryStats || null);
+
+          if (Array.isArray(cachedMeta.latestPreviewData) && cachedMeta.latestPreviewData.length > 0) {
+            setResults(cachedMeta.latestPreviewData);
+          }
+
+          localforage.getItem(cacheDataKey).then((cachedData) => {
+            const sameSnapshot = cachedData?.timestamp && cachedMeta?.timestamp && cachedData.timestamp === cachedMeta.timestamp;
+            if (isMounted && sameSnapshot && cachedData?.latestStoredData) {
+              applyStoredProcessedData(cachedData.latestStoredData);
+            }
+          }).catch((err) => {
+            console.warn('IndexedDB Full Cache Read Failed', err);
+          });
+
+          setIsInitialDataLoading(false);
+        } else if (cachedMeta && !isFresh) {
+          await Promise.all([
+            localforage.removeItem(cacheMetaKey),
+            localforage.removeItem(cacheDataKey)
+          ]);
+        } else if (!cachedMeta) {
+          await localforage.removeItem(cacheDataKey);
         }
-        setIsInitialDataLoading(false); // Drop the loading screen instantly!
+      } catch (err) {
+        console.warn('IndexedDB Read Failed', err);
       }
 
-      // STEP 2: SILENT BACKGROUND FETCH (Fresh data)
+      // 2. FETCH SUMMARY & PREVIEW (Google Sheets)
       try {
         setIsRefreshingSavedData(true);
-        const [userData, storedDataList, latestStoredData, lastModified] = await Promise.all([
-          getUserInfo(),
-          getUserUploadedDataSummary(10, 'storm-masterlist', true),
-          getLatestUserUploadedData('storm-masterlist'),
-          getLastModifiedInfo('storm-masterlist')
+
+        const [storedDataList, lastModified] = await Promise.all([
+          summaryPromise,
+          lastModifiedPromise
         ]);
-        
-        // STEP 3: UPDATE SYSTEM STATE
-        setUserInfo(userData);
+
+        if (!isMounted) return;
+
         setStoredData(storedDataList);
         setLastModifiedInfo(lastModified);
-        if (latestStoredData) {
-          applyStoredProcessedData(latestStoredData);
+
+        const latestSummary = storedDataList.length > 0 ? storedDataList[0] : null;
+        const previewData = Array.isArray(latestSummary?.metadata?.previewData) ? latestSummary.metadata.previewData : [];
+        const summaryStats = latestSummary?.metadata?.summaryStats || null;
+
+        if (!hasFreshCache && previewData.length > 0) {
+          setResults(previewData);
+          setPersistedSummaryStats(summaryStats);
+          setIsInitialDataLoading(false);
+        } else if (!hasFreshCache) {
+          setPersistedSummaryStats(null);
+          setIsInitialDataLoading(false);
         }
-        
-        // STEP 4: UPDATE CACHE WITH FRESH DATA
-        writeCache({
-          userInfo: userData,
-          storedData: storedDataList,
-          lastModifiedInfo: lastModified,
-          latestStoredData: latestStoredData || null
-        });
-      } catch (error) {
-        console.error('Failed to load user data:', error);
+
+        const userData = await userInfoPromise;
+        if (isMounted && userData) {
+          setUserInfo(userData);
+        }
+
+        // 3. SILENT DRIVE FETCH (Google Drive - Background)
+        if (latestSummary) {
+          const fullData = await getUploadedDataById(latestSummary.id, true, 'storm-masterlist');
+
+          if (isMounted && fullData) {
+            applyStoredProcessedData(fullData);
+
+            await saveDashboardCache({
+              nextUserInfo: userData || getCachedUserInfo() || null,
+              nextStoredData: storedDataList,
+              nextLastModifiedInfo: lastModified,
+              latestStoredData: fullData,
+              latestPreviewData: previewData,
+              nextSummaryStats: fullData?.metadata?.summaryStats || summaryStats
+            });
+          }
+        }
+      } catch (err) {
+        console.error('Failed to load user data:', err);
       } finally {
-        setIsRefreshingSavedData(false);
-        setIsInitialDataLoading(false);
+        if (isMounted) {
+          setIsRefreshingSavedData(false);
+          setIsInitialDataLoading(false);
+        }
       }
     };
+
     loadUserData();
+
+    return () => {
+      isMounted = false;
+      clearTimeout(bootLoaderTimeout);
+    };
   }, []);
 
   const handleFileChange = (e, setFileState) => {
@@ -455,14 +606,17 @@ export default function SMDashboard() {
     setFilterStatus('ALL');
     setSelectedRowDetails(null);
     setShowAiPanel(false);
+    setLoadedDataSource(null);
 
     try {
       const data = await scanFiles(monitorFile1, monitorFile2);
       const safeData = Array.isArray(data) ? data.filter((row) => row && typeof row === 'object') : [];
+      const summaryStats = buildStormSummaryStats(safeData);
       setResults(safeData);
+      setPersistedSummaryStats(summaryStats);
 
       const fileNames = `${monitorFile1.name} + ${monitorFile2.name}`;
-      
+
       storeUploadedData(
         fileNames,
         'storm-masterlist',
@@ -473,7 +627,8 @@ export default function SMDashboard() {
           processedRecords: safeData.length,
           dashboardMode: 'storm-masterlist',
           timestamp: new Date().toISOString(),
-          engineerName: engineerName 
+          engineerName: engineerName,
+          summaryStats
         }
       )
         .then(async () => {
@@ -483,15 +638,18 @@ export default function SMDashboard() {
           ]);
           setStoredData(updatedStoredData);
           setLastModifiedInfo(lastModified);
-          writeCache({
-            userInfo,
-            storedData: updatedStoredData,
-            lastModifiedInfo: lastModified,
+          saveDashboardCache({
+            nextUserInfo: userInfo || getCachedUserInfo() || null,
+            nextStoredData: updatedStoredData,
+            nextLastModifiedInfo: lastModified,
             latestStoredData: {
               processedData: safeData,
-              fileName: fileNames
-            }
-          });
+              fileName: fileNames,
+              metadata: { summaryStats }
+            },
+            latestPreviewData: safeData,
+            nextSummaryStats: summaryStats
+          }).catch((err) => console.warn('IndexedDB Write Failed', err));
         })
         .catch((storeError) => {
           console.error('Failed to store data:', storeError);
@@ -520,11 +678,13 @@ export default function SMDashboard() {
       ]);
       setStoredData(updatedStoredData);
       setLastModifiedInfo(lastModified);
-      writeCache({
-        userInfo,
-        storedData: updatedStoredData,
-        lastModifiedInfo: lastModified
-      });
+      saveDashboardCache({
+        nextUserInfo: userInfo || getCachedUserInfo() || null,
+        nextStoredData: updatedStoredData,
+        nextLastModifiedInfo: lastModified,
+        latestPreviewData: results,
+        nextSummaryStats: persistedSummaryStats
+      }).catch((err) => console.warn('IndexedDB Write Failed', err));
     } catch (error) {
       console.error('Failed to refresh stored data:', error);
     }
@@ -535,32 +695,68 @@ export default function SMDashboard() {
       setIsStoredDataLoading(true);
       const fullItem = await getUploadedDataById(item.id, true, 'storm-masterlist');
       applyStoredProcessedData(fullItem);
-      writeCache({
-        userInfo,
-        storedData,
-        lastModifiedInfo,
-        latestStoredData: fullItem
-      });
-      showThemeModal({
-        title: 'Data Loaded',
-        message: `Loaded data from: ${fullItem.fileName}\n${fullItem.processedData?.length || 0} results loaded.`,
-        type: 'info',
-        confirmText: 'OK'
-      });
+      saveDashboardCache({
+        nextUserInfo: userInfo || getCachedUserInfo() || null,
+        nextStoredData: storedData,
+        nextLastModifiedInfo: lastModifiedInfo,
+        latestStoredData: fullItem,
+        latestPreviewData: fullItem?.metadata?.previewData || results,
+        nextSummaryStats: fullItem?.metadata?.summaryStats || persistedSummaryStats
+      }).catch((err) => console.warn('IndexedDB Write Failed', err));
+      
+      const dateStr = new Date(fullItem.uploadDate || Date.now()).toLocaleDateString();
+      const timeStr = new Date(fullItem.uploadDate || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const engName = fullItem.metadata?.engineerName || 'Unknown User';
+
+      showToast(
+        'Data Loaded',
+        `Date: ${dateStr}\nTime: ${timeStr}\nRan by: ${engName}`,
+        'success'
+      );
     } catch (error) {
       console.error('Failed to load stored data:', error);
-      showThemeModal({
-        title: 'Load Failed',
-        message: 'Failed to load stored data.',
-        type: 'error',
-        confirmText: 'OK'
-      });
+      showToast('Load Failed', 'Failed to load stored data.', 'error');
     } finally {
       setIsStoredDataLoading(false);
     }
   };
 
-  const stats = useMemo(() => {
+  const renderHistoryLoadingSkeleton = () => (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+      <div style={{ background: 'var(--bg-primary)', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-light)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+          <span>Loading data from history...</span>
+          <span>{Math.round(historyLoadProgress)}%</span>
+        </div>
+        <div className="smart-progress-track">
+          <div className="smart-progress-fill" style={{ width: `${historyLoadProgress}%` }}></div>
+        </div>
+      </div>
+      {[...Array(4)].map((_, idx) => (
+        <div
+          key={`sm-history-skeleton-${idx}`}
+          style={{
+            background: 'var(--bg-primary)',
+            padding: '12px',
+            borderRadius: '8px',
+            border: '1px solid var(--border-light)'
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+            <div className="skeleton-bar" style={{ width: '62%', height: '12px', borderRadius: '4px' }}></div>
+            <div className="skeleton-bar" style={{ width: '22%', height: '10px', borderRadius: '4px' }}></div>
+          </div>
+          <div className="skeleton-bar" style={{ width: '78%', height: '10px', borderRadius: '4px', marginBottom: '10px' }}></div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div className="skeleton-bar" style={{ width: '42%', height: '10px', borderRadius: '4px' }}></div>
+            <div className="skeleton-bar" style={{ width: '66px', height: '24px', borderRadius: '12px' }}></div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+
+  const computedStats = useMemo(() => {
     const siteMap = new Map();
     results.forEach(r => {
       // FIX: Use baseLocation as the true unique identifier for sites
@@ -578,20 +774,22 @@ export default function SMDashboard() {
       mismatch: statusValues.filter(s => s === 'MISMATCH').length,
     };
   }, [results]);
+  const stats = persistedSummaryStats || computedStats;
 
   const deferredSearchTerm = useDeferredValue(debouncedTerm);
-  const fallbackFilteredResults = useMemo(() => {
+  const fallbackFilteredIndices = useMemo(() => {
     // Fallback path for environments where Web Workers are unavailable.
     if (workerReady) return [];
 
     const term = String(deferredSearchTerm || '').trim().toLowerCase();
     const statusOrder = ['NEW', 'MISMATCH', 'UNCHANGED', 'REMOVED'];
+    const indexedRows = results.map((row, index) => ({ row, index }));
     const statusFiltered = filterStatus === 'ALL'
-      ? results
-      : results.filter((row) => row.matchStatus === filterStatus);
+      ? indexedRows
+      : indexedRows.filter(({ row }) => row.matchStatus === filterStatus);
 
     return statusFiltered
-      .filter((row) => {
+      .filter(({ row }) => {
         if (!term) return true;
         const searchable = [row.plaId, row.baseLocation, row.remarks, row.nmsName]
           .filter(Boolean)
@@ -600,15 +798,16 @@ export default function SMDashboard() {
         return searchable.includes(term);
       })
       .sort((a, b) => {
-        const orderA = statusOrder.indexOf(a.matchStatus);
-        const orderB = statusOrder.indexOf(b.matchStatus);
+        const orderA = statusOrder.indexOf(a.row.matchStatus);
+        const orderB = statusOrder.indexOf(b.row.matchStatus);
         if (orderA !== orderB) return orderA - orderB;
-        const baseA = a.baseLocation || '';
-        const baseB = b.baseLocation || '';
+        const baseA = a.row.baseLocation || '';
+        const baseB = b.row.baseLocation || '';
         const baseCompare = baseA.localeCompare(baseB, undefined, { numeric: true, sensitivity: 'base' });
-        if (baseCompare === 0) return (a.nmsName || '').localeCompare(b.nmsName || '');
+        if (baseCompare === 0) return (a.row.nmsName || '').localeCompare(b.row.nmsName || '');
         return baseCompare;
-      });
+      })
+      .map(({ index }) => index);
   }, [results, filterStatus, deferredSearchTerm, workerReady]);
 
   useEffect(() => {
@@ -635,14 +834,28 @@ export default function SMDashboard() {
     });
   }, [workerReady, deferredSearchTerm, filterStatus, results.length]);
 
-  const filteredResults = useMemo(() => {
-    if (!workerReady) return fallbackFilteredResults;
-    return workerFilteredIndices
-      .map((index) => results[index])
-      .filter(Boolean);
-  }, [workerReady, fallbackFilteredResults, workerFilteredIndices, results]);
+  const allResultIndices = useMemo(() => results.map((_, index) => index), [results]);
+  const visibleResultIndices = useMemo(() => {
+    if (!workerReady) return fallbackFilteredIndices;
+    // Bypass worker only when showing full, unfiltered results with no search term.
+    if (
+      workerFilteredIndices.length === 0 &&
+      results.length > 0 &&
+      !deferredSearchTerm &&
+      filterStatus === 'ALL'
+    ) {
+      return allResultIndices;
+    }
+    return workerFilteredIndices;
+  }, [workerReady, fallbackFilteredIndices, workerFilteredIndices, results.length, deferredSearchTerm, filterStatus, allResultIndices]);
+  const deferredVisibleResultIndices = useDeferredValue(visibleResultIndices);
+  const filteredResults = useMemo(
+    () => deferredVisibleResultIndices.map((index) => results[index]).filter(Boolean),
+    [deferredVisibleResultIndices, results]
+  );
+  const mapFilteredResults = useDeferredValue(filteredResults);
 
-  const isSearchUpdating = isSearchPending || deferredSearchTerm !== debouncedTerm || isWorkerBusy;
+  const isSearchUpdating = isSearchPending || deferredSearchTerm !== debouncedTerm || isWorkerBusy || isFilterPending;
 
   const getPreviewLabel = (status) => {
     switch(status) {
@@ -655,15 +868,22 @@ export default function SMDashboard() {
     }
   };
 
+  const handleFilterStatusChange = (nextStatus) => {
+    startFilterTransition(() => {
+      setFilterStatus(nextStatus);
+    });
+  };
+
   const VirtualizedRow = ({ index, style }) => {
-    const row = filteredResults[index];
+    const resultIndex = visibleResultIndices[index];
+    const row = results[resultIndex];
     if (!row) return null;
 
     const isExactRow = selectedSite?.nmsName === row.nmsName;
     const isSameGroup = selectedSite?.baseLocation === row.baseLocation && !isExactRow;
 
-    const nextRow = filteredResults[index + 1];
-    const prevRow = filteredResults[index - 1];
+    const nextRow = results[visibleResultIndices[index + 1]];
+    const prevRow = results[visibleResultIndices[index - 1]];
     const isLastOfGroup = !nextRow || nextRow.baseLocation !== row.baseLocation;
     const isFirstOfGroup = !prevRow || prevRow.baseLocation !== row.baseLocation;
 
@@ -737,7 +957,7 @@ export default function SMDashboard() {
   };
 
   // ÃƒÂ°Ã…Â¸Ã…Â¡Ã¢â€šÂ¬ 1. ALL VARIABLES MUST BE DEFINED FIRST
-  const currentUserName = userInfo?.displayName || userInfo?.name || "Unknown User";
+  const currentUserName = userInfo?.displayName || userInfo?.name || "Workspace User";
   const currentUserEmail = userInfo?.userId || "user@globe.com.ph"; 
   
   const engineerName = currentUserName || "Workspace User";
@@ -789,7 +1009,7 @@ const headerActions = (
 
   return (
     <DashboardLayout
-      isLoading={pageIsLoading}
+      isLoading={isNavigating} 
       logo={currentLogo}
       onLogoClick={() => handleNavigate("/")}
       headerActions={headerActions}
@@ -897,8 +1117,10 @@ const headerActions = (
                     </div>
                   )}
 
-                  <div className="custom-scrollbar" style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
-                    {storedData.length > 0 ? (
+                  <div className="custom-scrollbar" style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden'}}>
+                    {isStoredDataLoading ? (
+                      renderHistoryLoadingSkeleton()
+                    ) : storedData.length > 0 ? (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                         {storedData.map((item, index) => (
                           <div key={item.id} style={{ background: 'var(--bg-primary)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-light)', cursor: 'pointer', transition: 'all 0.2s' }} onClick={() => handleLoadStoredData(item)} className="row-hover">
@@ -1042,7 +1264,7 @@ const headerActions = (
               </div>
 
               {!showHistoryPanel && (
-                <MapVisualizer selectedSite={selectedSite} filteredResults={filteredResults} isExpanded={false} />
+                <MapVisualizer selectedSite={selectedSite} filteredResults={mapFilteredResults} isExpanded={false} />
               )}
             </div>
           </div>
@@ -1082,195 +1304,421 @@ const headerActions = (
 
           <div className="output-card">
             <div className="dashboard-container">
-              <AnalyticsDashboard data={results} activeFilter={filterStatus} onFilterChange={setFilterStatus} isDarkMode={isDarkMode} />
+              {((isInitialDataLoading || isLoading || isStoredDataLoading) && results.length === 0) ? (
+                <div className={`analytics-bar-card luxury-glass ${results.length > 0 ? 'compact-mode' : ''}`} style={{ flex: 1.5, minWidth: '250px', maxWidth: '300px' }}>
+                  <div className="bar-header" style={{ marginBottom: '8px' }}>
+                    <span className="chart-title" style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-secondary)', margin: 0, letterSpacing: '0.5px' }}>DELTA BREAKDOWN</span>
+                  </div>
+                  <div className="stacked-bar-wrapper skeleton-bar" style={{ height: '8px', width: '100%', borderRadius: '4px' }}></div>
+                </div>
+              ) : (
+                <AnalyticsDashboard data={results} activeFilter={filterStatus} onFilterChange={handleFilterStatusChange} isDarkMode={isDarkMode} />
+              )}
               <div className={`cards-section ${results.length > 0 ? 'compact-mode' : ''}`}>
-                <div className={`stat-card luxury-glass total ${filterStatus === 'ALL' ? 'active' : ''} ${results.length > 0 ? 'compact-mode' : ''}`} onClick={() => setFilterStatus('ALL')} style={{cursor: 'pointer'}}>
-                  <img src={isDarkMode ? ICONS.checkDark : ICONS.checkLight} className="stat-icon" alt="Total" />
-                  <div className="stat-label">Total Validated</div>
-                  <div className="stat-value">{stats.total}</div>
+                
+                {/* 1. TOTAL CARD */}
+                <div className={`stat-card luxury-glass total ${filterStatus === 'ALL' ? 'active' : ''} ${results.length > 0 ? 'compact-mode' : ''}`} onClick={() => handleFilterStatusChange('ALL')} style={{cursor: 'pointer'}}>
+                  {((isInitialDataLoading || isLoading || isStoredDataLoading) && results.length === 0) ? (
+                    <>
+                      <div className="stat-icon skeleton-bar" style={{ borderRadius: '50%' }}></div>
+                      <div className="stat-label skeleton-bar" style={{ width: '90px', height: '14px', borderRadius: '4px', color: 'transparent', margin: results.length > 0 ? '0' : '0 0 8px 0' }}></div>
+                      <div className="stat-value skeleton-bar" style={{ width: '40px', height: '28px', borderRadius: '6px', color: 'transparent' }}></div>
+                    </>
+                  ) : (
+                    <>
+                      <img src={isDarkMode ? ICONS.checkDark : ICONS.checkLight} className="stat-icon" alt="Total" />
+                      <div className="stat-label">Total Validated</div>
+                      <div className="stat-value">{stats.total}</div>
+                    </>
+                  )}
                 </div>
 
-                <div className={`stat-card luxury-glass unchanged ${filterStatus === 'UNCHANGED' ? 'active' : ''} ${results.length > 0 ? 'compact-mode' : ''}`} onClick={() => setFilterStatus('UNCHANGED')} style={{cursor: 'pointer'}}>
-                  <img src={isDarkMode ? ICONS.verifiedDark : ICONS.verifiedLight} className="stat-icon" alt="Verified" />
-                  <div className="stat-label">Verified</div>
-                  <div className="stat-value">{stats.unchanged}</div>
+                {/* 2. UNCHANGED CARD */}
+                <div className={`stat-card luxury-glass unchanged ${filterStatus === 'UNCHANGED' ? 'active' : ''} ${results.length > 0 ? 'compact-mode' : ''}`} onClick={() => handleFilterStatusChange('UNCHANGED')} style={{cursor: 'pointer'}}>
+                  {((isInitialDataLoading || isLoading || isStoredDataLoading) && results.length === 0) ? (
+                    <>
+                      <div className="stat-icon skeleton-bar" style={{ borderRadius: '50%' }}></div>
+                      <div className="stat-label skeleton-bar" style={{ width: '70px', height: '14px', borderRadius: '4px', color: 'transparent', margin: results.length > 0 ? '0' : '0 0 8px 0' }}></div>
+                      <div className="stat-value skeleton-bar" style={{ width: '40px', height: '28px', borderRadius: '6px', color: 'transparent' }}></div>
+                    </>
+                  ) : (
+                    <>
+                      <img src={isDarkMode ? ICONS.verifiedDark : ICONS.verifiedLight} className="stat-icon" alt="Verified" />
+                      <div className="stat-label">Verified</div>
+                      <div className="stat-value">{stats.unchanged}</div>
+                    </>
+                  )}
                 </div>
 
-                <div className={`stat-card luxury-glass new ${filterStatus === 'NEW' ? 'active' : ''} ${results.length > 0 ? 'compact-mode' : ''}`} onClick={() => setFilterStatus('NEW')} style={{cursor: 'pointer'}}>
-                  <img src={isDarkMode ? ICONS.glitterDark : ICONS.glitterLight} className="stat-icon" alt="New" />
-                  <div className="stat-label">New In NMS</div>
-                  <div className="stat-value">{stats.new}</div>
+                {/* 3. NEW CARD */}
+                <div className={`stat-card luxury-glass new ${filterStatus === 'NEW' ? 'active' : ''} ${results.length > 0 ? 'compact-mode' : ''}`} onClick={() => handleFilterStatusChange('NEW')} style={{cursor: 'pointer'}}>
+                  {((isInitialDataLoading || isLoading || isStoredDataLoading) && results.length === 0) ? (
+                    <>
+                      <div className="stat-icon skeleton-bar" style={{ borderRadius: '50%' }}></div>
+                      <div className="stat-label skeleton-bar" style={{ width: '85px', height: '14px', borderRadius: '4px', color: 'transparent', margin: results.length > 0 ? '0' : '0 0 8px 0' }}></div>
+                      <div className="stat-value skeleton-bar" style={{ width: '40px', height: '28px', borderRadius: '6px', color: 'transparent' }}></div>
+                    </>
+                  ) : (
+                    <>
+                      <img src={isDarkMode ? ICONS.glitterDark : ICONS.glitterLight} className="stat-icon" alt="New" />
+                      <div className="stat-label">New In NMS</div>
+                      <div className="stat-value">{stats.new}</div>
+                    </>
+                  )}
                 </div>
 
-                <div className={`stat-card luxury-glass removed ${filterStatus === 'REMOVED' ? 'active' : ''} ${results.length > 0 ? 'compact-mode' : ''}`} onClick={() => setFilterStatus('REMOVED')} style={{cursor: 'pointer'}}>
-                  <img src={isDarkMode ? ICONS.removedDark : ICONS.removedLight} className="stat-icon" alt="Removed" />
-                  <div className="stat-label">Removed</div>
-                  <div className="stat-value">{stats.removed}</div>
+                {/* 4. REMOVED CARD */}
+                <div className={`stat-card luxury-glass removed ${filterStatus === 'REMOVED' ? 'active' : ''} ${results.length > 0 ? 'compact-mode' : ''}`} onClick={() => handleFilterStatusChange('REMOVED')} style={{cursor: 'pointer'}}>
+                  {((isInitialDataLoading || isLoading || isStoredDataLoading) && results.length === 0) ? (
+                    <>
+                      <div className="stat-icon skeleton-bar" style={{ borderRadius: '50%' }}></div>
+                      <div className="stat-label skeleton-bar" style={{ width: '65px', height: '14px', borderRadius: '4px', color: 'transparent', margin: results.length > 0 ? '0' : '0 0 8px 0' }}></div>
+                      <div className="stat-value skeleton-bar" style={{ width: '40px', height: '28px', borderRadius: '6px', color: 'transparent' }}></div>
+                    </>
+                  ) : (
+                    <>
+                      <img src={isDarkMode ? ICONS.removedDark : ICONS.removedLight} className="stat-icon" alt="Removed" />
+                      <div className="stat-label">Removed</div>
+                      <div className="stat-value">{stats.removed}</div>
+                    </>
+                  )}
                 </div>
 
-                <div className={`stat-card luxury-glass mismatch ${filterStatus === 'MISMATCH' ? 'active' : ''} ${results.length > 0 ? 'compact-mode' : ''}`} onClick={() => setFilterStatus('MISMATCH')} style={{cursor: 'pointer'}}>
-                  <img src={isDarkMode ? ICONS.warningDark : ICONS.warningLight} className="stat-icon" alt="Warning" />
-                  <div className="stat-label">Discrepancy</div>
-                  <div className="stat-value">{stats.mismatch}</div>
+                {/* 5. MISMATCH CARD */}
+                <div className={`stat-card luxury-glass mismatch ${filterStatus === 'MISMATCH' ? 'active' : ''} ${results.length > 0 ? 'compact-mode' : ''}`} onClick={() => handleFilterStatusChange('MISMATCH')} style={{cursor: 'pointer'}}>
+                  {((isInitialDataLoading || isLoading || isStoredDataLoading) && results.length === 0) ? (
+                    <>
+                      <div className="stat-icon skeleton-bar" style={{ borderRadius: '50%' }}></div>
+                      <div className="stat-label skeleton-bar" style={{ width: '80px', height: '14px', borderRadius: '4px', color: 'transparent', margin: results.length > 0 ? '0' : '0 0 8px 0' }}></div>
+                      <div className="stat-value skeleton-bar" style={{ width: '40px', height: '28px', borderRadius: '6px', color: 'transparent' }}></div>
+                    </>
+                  ) : (
+                    <>
+                      <img src={isDarkMode ? ICONS.warningDark : ICONS.warningLight} className="stat-icon" alt="Warning" />
+                      <div className="stat-label">Discrepancy</div>
+                      <div className="stat-value">{stats.mismatch}</div>
+                    </>
+                  )}
                 </div>
+
               </div>
             </div>
 
             <div className="table-toolbar">
-              <div 
-                className="preview-dropdown-container" 
-                onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setShowPreviewMenu(false); }} 
-                tabIndex={-1}
-                style={{ flex: '1 1 auto', minWidth: 0 }}
-              >
-               <button 
-                          className="preview-toggle-btn" 
-                          onClick={() => setShowPreviewMenu(!showPreviewMenu)}
-                          disabled={results.length === 0}
-                          style={{ opacity: results.length === 0 ? 0.5 : 1, cursor: results.length === 0 ? 'not-allowed' : 'pointer', outline: 'none', maxWidth: '100%' }}
-                        >
-                          {/* ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸Ãƒâ€¦Ã‚Â¡ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ First Span: "Preview Data:" */}
-                          <span style={{ color: isDarkMode ? '#ffffff' : 'var(--text-primary)' }}>
-                            Preview Data: 
-                          </span> 
-                          
-                          {' '} {/* Adds a tiny space between the words */}
+              <div style={{ flex: '1 1 auto', minWidth: 0, display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div
+                  className="preview-dropdown-container"
+                  onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setShowPreviewMenu(false); }}
+                  tabIndex={-1}
+                  style={{ position: 'relative' }}
+                >
+                  <button
+                    className="preview-toggle-btn"
+                    onClick={() => setShowPreviewMenu(!showPreviewMenu)}
+                    disabled={results.length === 0}
+                    style={{
+                      opacity: results.length === 0 ? 0.5 : 1,
+                      cursor: results.length === 0 ? 'not-allowed' : 'pointer',
+                      outline: 'none',
+                      maxWidth: '100%'
+                    }}
+                  >
+                    <span style={{ color: isDarkMode ? '#ffffff' : 'var(--text-primary)' }}>
+                      Preview Data:
+                    </span>{' '}
+                    <span style={{ fontWeight: 'bold', color: isDarkMode ? '#ffffff' : 'var(--brand-purple)' }}>
+                      {getPreviewLabel(filterStatus)}
+                    </span>
+                  </button>
 
-                          {/* ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸Ãƒâ€¦Ã‚Â¡ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ Second Span: The Dynamic Label */}
-                          <span style={{ 
-                            fontWeight: 'bold', 
-                            color: isDarkMode ? '#ffffff' : 'var(--brand-purple)' 
-                          }}>
-                            {getPreviewLabel(filterStatus)}
-                          </span>
-                        </button>
+                  {showPreviewMenu && (
+                    <div className="preview-menu">
+                      <button onClick={() => { handleFilterStatusChange('ALL'); setShowPreviewMenu(false); }}>Storm Masterlist</button>
+                      <button onClick={() => { handleFilterStatusChange('NEW'); setShowPreviewMenu(false); }}>New Sites Only</button>
+                      <button onClick={() => { handleFilterStatusChange('REMOVED'); setShowPreviewMenu(false); }}>Removed Only</button>
+                      <button onClick={() => { handleFilterStatusChange('MISMATCH'); setShowPreviewMenu(false); }}>Mismatches Only</button>
+                      <button onClick={() => { handleFilterStatusChange('UNCHANGED'); setShowPreviewMenu(false); }}>Unchanged Only</button>
+                    </div>
+                  )}
+                </div>
 
-                {showPreviewMenu && (
-                  <div className="preview-menu">
-                    <button onClick={() => { setFilterStatus('ALL'); setShowPreviewMenu(false); }}>Storm Masterlist</button>
-                    <button onClick={() => { setFilterStatus('NEW'); setShowPreviewMenu(false); }}>New Sites Only</button>
-                    <button onClick={() => { setFilterStatus('REMOVED'); setShowPreviewMenu(false); }}>Removed Only</button>
-                    <button onClick={() => { setFilterStatus('MISMATCH'); setShowPreviewMenu(false); }}>Mismatches Only</button>
-                    <button onClick={() => { setFilterStatus('UNCHANGED'); setShowPreviewMenu(false); }}>Unchanged Only</button>
+                {loadedDataSource && results.length > 0 && (
+                  <div
+                    className="loaded-data-badge"
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      padding: '6px 12px',
+                      background: 'var(--bg-input)',
+                      borderRadius: '20px',
+                      border: '1px solid var(--border-light)',
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis'
+                    }}
+                  >
+                    <svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      style={{ color: 'var(--text-secondary)', flexShrink: 0 }}
+                    >
+                      <circle cx="12" cy="12" r="10"></circle>
+                      <polyline points="12 6 12 12 16 14"></polyline>
+                    </svg>
+                    <span style={{ fontSize: '0.75em', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      Ran by: <span style={{ color: 'var(--brand-purple)', fontWeight: 600, marginRight: '4px' }}>{loadedDataSource.engineerName}</span>
+                      | <span style={{ color: 'var(--text-primary)', fontWeight: 600, marginLeft: '4px' }}>{loadedDataSource.date} {loadedDataSource.time}</span>
+                    </span>
                   </div>
                 )}
               </div>
 
               <div style={{ position: 'relative', flex: '1 1 240px', minWidth: 0, maxWidth: '320px', width: '100%' }}>
-                <input 
-                  type="text" 
-                  className="search-bar" 
-                  placeholder="Search ID or Name..." 
-                  value={searchTerm} 
-                  onChange={(e) => setSearchTerm(e.target.value)} 
-                  disabled={results.length === 0} 
-                  style={{ 
+                <input
+                  type="text"
+                  className="search-bar"
+                  placeholder="Search ID or Name..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  disabled={results.length === 0}
+                  style={{
                     width: '100%',
                     boxSizing: 'border-box',
-                    opacity: results.length === 0 ? 0.5 : 1, 
-                    cursor: results.length === 0 ? 'not-allowed' : 'text', 
+                    outline: 'none',
+                    color: 'var(--text-primary)',
+                    opacity: results.length === 0 ? 0.5 : 1,
+                    cursor: results.length === 0 ? 'not-allowed' : 'text',
                     paddingRight: '92px'
                   }}
                 />
-                <span style={{ position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)', fontSize: '0.75rem', color: 'var(--text-secondary)', opacity: isSearchUpdating ? 1 : 0, pointerEvents: 'none', transition: 'opacity 0.12s ease' }}>
-                  Searching...
+                <span
+                  style={{
+                    position: 'absolute',
+                    right: '12px',
+                    top: '50%',
+                    transform: 'translateY(-50%)',
+                    fontSize: '0.75rem',
+                    color: 'var(--text-secondary)',
+                    opacity: (isSearchUpdating || ((isInitialDataLoading || isLoading || isStoredDataLoading) && results.length > 0)) ? 1 : 0,
+                    pointerEvents: 'none',
+                    transition: 'opacity 0.12s ease'
+                  }}
+                >
+                  {isSearchUpdating ? 'Searching...' : 'Syncing...'}
                 </span>
               </div>
             </div>
+                      <div className="output-box" style={{ flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: 'var(--bg-primary)' }}>
+                        <div className="table-wrapper" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                          <div style={{ display: 'flex', padding: '16px 20px', fontWeight: 600, borderBottom: isDarkMode ? '1px solid rgba(255, 255, 255, 0.08)' : '1px solid rgba(15, 23, 42, 0.18)', background: isDarkMode ? 'linear-gradient(180deg, rgba(17, 28, 68, 0.95) 0%, rgba(17, 28, 68, 0.85) 100%)' : 'linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(255, 255, 255, 0.75) 100%)', color: 'var(--text-secondary)', textTransform: 'uppercase', fontSize: '0.85rem' }}>
+                            <div style={{ width: '12%', paddingRight: '15px' }}>PLA_ID</div>
+                            <div style={{ width: '12%', paddingRight: '15px' }}>Status</div>
+                            <div style={{ width: '19%', paddingRight: '15px' }}>Base Name</div>
+                            <div style={{ width: '12%', paddingRight: '15px', color: '#1a73e8' }}>Technology</div>
+                            <div style={{ width: '25%', paddingRight: '15px', color: '#1a73e8' }}>BCF NAME</div>
+                            <div style={{ width: '20%', paddingRight: '15px' }}>Remarks</div>
+                          </div>
+                          <div ref={listContainerRef} style={{ flex: 1, width: '100%', overflow: 'hidden', position: 'relative' }}>
+                      {(() => {
+                        const isProcessing = isInitialDataLoading || isLoading || isStoredDataLoading;
+                        const isDatabaseSyncing = isInitialDataLoading || isStoredDataLoading || isRefreshingSavedData;
+                        const hasData = results && results.length > 0;
+                        const showOverlaySkeleton = isStoredDataLoading || isTableRevealActive;
+                        const isActiveLoading = isProcessing || isDatabaseSyncing;
+                        const emptyStateTitle = isDatabaseSyncing
+                          ? 'Searching database...'
+                          : isLoading
+                            ? 'Processing uploaded data...'
+                            : 'No Data Available';
+                        const emptyStateSubtitle = isDatabaseSyncing
+                          ? 'Importing data from the processed history.'
+                          : isLoading
+                            ? 'Preparing your latest processed results.'
+                            : 'Upload your masterlist to populate the table.';
 
-            <div className="output-box" style={{ flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: 'var(--bg-primary)' }}>
-              {results.length > 0 ? (
-                <div className="table-wrapper" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                  <div style={{ display: 'flex', padding: '16px 20px', fontWeight: 600, borderBottom: isDarkMode ? '1px solid rgba(255, 255, 255, 0.08)' : '1px solid rgba(15, 23, 42, 0.18)', background: isDarkMode ? 'linear-gradient(180deg, rgba(17, 28, 68, 0.95) 0%, rgba(17, 28, 68, 0.85) 100%)' : 'linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(255, 255, 255, 0.75) 100%)', color: 'var(--text-secondary)', textTransform: 'uppercase', fontSize: '0.85rem' }}>
-                    <div style={{ width: '12%', paddingRight: '15px' }}>PLA_ID</div>
-                    <div style={{ width: '12%', paddingRight: '15px' }}>Status</div>
-                    <div style={{ width: '19%', paddingRight: '15px' }}>Base Name</div>
-                    <div style={{ width: '12%', paddingRight: '15px', color: '#1a73e8' }}>Technology</div>
-                    <div style={{ width: '25%', paddingRight: '15px', color: '#1a73e8' }}>BCF NAME</div>
-                    <div style={{ width: '20%', paddingRight: '15px' }}>Remarks</div>
-                  </div>
-                  <div ref={listContainerRef} style={{ flex: 1, width: '100%', overflow: 'hidden' }}>
-                    <List
-                      height={mainListSize.height}
-                      itemCount={filteredResults.length}
-                      itemSize={58}
-                      width={mainListSize.width}
-                      overscanCount={10}
-                      className="custom-scrollbar"
-                    >
-                      {VirtualizedRow}
-                    </List>
-                  </div>
-                </div>
-              ) : (
-                // ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸Ãƒâ€¦Ã‚Â¡ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ ENTERPRISE SKELETON LOADER FOR STORM MASTER LIST
-                <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column' }}>
-                  {[...Array(8)].map((_, i) => (
-                    <div key={i} style={{ display: 'flex', alignItems: 'center', padding: '0 20px', height: '60px', borderBottom: "1px solid rgba(128,128,128,0.05)", boxSizing: 'border-box', opacity: 0.6 }}>
-                      <div style={{ width: '10%', paddingRight: '15px' }}><div style={{ height: '12px', width: '70%', background: 'var(--border-color)', borderRadius: '4px' }}></div></div>
-                      <div style={{ width: '10%', paddingRight: '15px' }}><div style={{ height: '12px', width: '60%', background: 'var(--border-color)', borderRadius: '4px' }}></div></div>
-                      <div style={{ width: '20%', paddingRight: '15px' }}><div style={{ height: '12px', width: '85%', background: 'var(--border-color)', borderRadius: '4px' }}></div></div>
-                      <div style={{ width: '10%', paddingRight: '15px' }}><div style={{ height: '12px', width: '50%', background: 'var(--border-color)', borderRadius: '4px' }}></div></div>
-                      <div style={{ width: '25%', paddingRight: '15px' }}><div style={{ height: '12px', width: '90%', background: 'var(--border-color)', borderRadius: '4px' }}></div></div>
-                      <div style={{ width: '25%', paddingRight: '15px' }}><div style={{ height: '12px', width: '95%', background: 'var(--border-color)', borderRadius: '4px' }}></div></div>
+                        // STATE 1: DATA IS READY (Seamless background sync)
+                        if (hasData) {
+                          return (
+                            <div className={isTableRevealActive ? 'table-content-reveal' : ''} style={{ position: 'relative', width: '100%', height: '100%' }}>
+                              <List 
+                                height={mainListSize.height} 
+                                itemCount={visibleResultIndices.length} 
+                                itemSize={58} // SM Dashboard uses 58px rows
+                                width={mainListSize.width} 
+                                overscanCount={10} 
+                                className="custom-scrollbar"
+                              >
+                                {VirtualizedRow}
+                              </List>
+                              {showOverlaySkeleton && (
+                                <div
+                                  className={`table-skeleton-overlay ${isTableRevealActive && !isDatabaseSyncing ? 'fade-out' : ''}`}
+                                  style={{
+                                    position: 'absolute',
+                                    inset: 0,
+                                    zIndex: 20,
+                                    background: isDarkMode ? 'rgba(17, 28, 68, 0.38)' : 'rgba(248, 250, 252, 0.75)',
+                                    backdropFilter: 'blur(3px)',
+                                    WebkitBackdropFilter: 'blur(3px)',
+                                    pointerEvents: 'none'
+                                  }}
+                                >
+                                  {[...Array(8)].map((_, i) => (
+                                    <div
+                                      key={`sm-table-overlay-skeleton-${i}`}
+                                      style={{
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        padding: '0 20px',
+                                        height: '58px',
+                                        borderBottom: '1px solid rgba(128,128,128,0.05)',
+                                        boxSizing: 'border-box'
+                                      }}
+                                    >
+                                      <div style={{ width: '12%', paddingRight: '15px' }}><div className="skeleton-bar" style={{ height: '12px', width: '60%', borderRadius: '4px' }}></div></div>
+                                      <div style={{ width: '23%', paddingRight: '15px' }}><div className="skeleton-bar" style={{ height: '12px', width: '80%', borderRadius: '4px' }}></div></div>
+                                      <div style={{ width: '20%', paddingRight: '15px' }}><div className="skeleton-bar" style={{ height: '12px', width: '70%', borderRadius: '4px' }}></div></div>
+                                      <div style={{ width: '37%', paddingRight: '15px' }}><div className="skeleton-bar" style={{ height: '12px', width: '90%', borderRadius: '4px' }}></div></div>
+                                      <div style={{ width: '8%', paddingRight: '15px', display: 'flex', justifyContent: 'center' }}><div className="skeleton-bar" style={{ height: '24px', width: '30px', borderRadius: '12px' }}></div></div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        }
+
+                        // STATE 2 & 3: LOADING OR EMPTY
+                        return (
+                          <div className={!isActiveLoading ? 'skeleton-idle' : ''} style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', position: 'relative' }}>
+                            
+                            {/* The Skeleton Rows */}
+                            {[...Array(8)].map((_, i) => (
+                              <div key={i} style={{ 
+                                display: 'flex', alignItems: 'center', padding: '0 20px', height: '58px', /* Matched to 58px */
+                                borderBottom: "1px solid rgba(128,128,128,0.05)", boxSizing: 'border-box' 
+                              }}>
+                                <div style={{ width: '12%', paddingRight: '15px' }}><div className="skeleton-bar" style={{ height: '12px', width: '60%', borderRadius: '4px' }}></div></div>
+                                <div style={{ width: '23%', paddingRight: '15px' }}><div className="skeleton-bar" style={{ height: '12px', width: '80%', borderRadius: '4px' }}></div></div>
+                                <div style={{ width: '20%', paddingRight: '15px' }}><div className="skeleton-bar" style={{ height: '12px', width: '70%', borderRadius: '4px' }}></div></div>
+                                <div style={{ width: '37%', paddingRight: '15px' }}><div className="skeleton-bar" style={{ height: '12px', width: '90%', borderRadius: '4px' }}></div></div>
+                                <div style={{ width: '8%', paddingRight: '15px', display: 'flex', justifyContent: 'center' }}><div className="skeleton-bar" style={{ height: '24px', width: '30px', borderRadius: '12px' }}></div></div>
+                              </div>
+                            ))}
+
+                            <div style={{ 
+                              position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', 
+                              background: 'var(--glass-blur)', backdropFilter: 'blur(3px)', zIndex: 10 
+                            }}>
+                                <div style={{ 
+                                  background: 'var(--bg-card)', padding: '20px 40px', borderRadius: '12px', 
+                                  boxShadow: '0 8px 32px rgba(0,0,0,0.2)', border: '1px solid var(--border-color)',
+                                  display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '15px'
+                                }}>
+                                  <img src={isDarkMode ? fileDark : fileLight} alt="No Data" style={{ width: '40px', opacity: 0.5 }} />
+                                  <span style={{ color: 'var(--text-primary)', fontWeight: 'bold', fontSize: '1.1rem' }}>{emptyStateTitle}</span>
+                                  <span style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>{emptyStateSubtitle}</span>
+                                  {isDatabaseSyncing && (
+                                    <div style={{ width: '100%', minWidth: '220px', marginTop: '2px' }}>
+                                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                                        <span>Syncing...</span>
+                                        <span>{Math.round(databaseProgress)}%</span>
+                                      </div>
+                                      <div className="smart-progress-track">
+                                        <div className="smart-progress-fill" style={{ width: `${databaseProgress}%` }}></div>
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                            </div>
+
+                          </div>
+                        );
+                      })()}
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
 
-          </div>
-        </section>
-      </main>
+                        </div>
+                      </div>
 
-      {themeModal.visible && (
-        <div className="theme-modal-overlay" onClick={handleThemeModalCancel}>
-          <div className="theme-modal-card" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
-            <div className="theme-modal-header">
-              <h3>{themeModal.title}</h3>
-              <button className="theme-modal-close" onClick={handleThemeModalCancel} aria-label="Close">x</button>
-            </div>
-            <div className="theme-modal-body">
-              <p>{themeModal.message}</p>
-              {themeModal.input && (
-                <input
-                  type="text"
-                  value={themeModal.inputValue}
-                  onChange={(e) => setThemeModal(prev => ({ ...prev, inputValue: e.target.value }))}
-                  className="theme-modal-input"
-                  placeholder="Enter your name"
-                />
-              )}
-            </div>
-            <div className="theme-modal-actions">
-              {themeModal.cancelText && (
-                <button className="theme-modal-button secondary" onClick={handleThemeModalCancel}>
-                  {themeModal.cancelText}
+                    </div>
+                  </section>
+                </main>
+
+                {themeModal.visible && (
+                  <div className="theme-modal-overlay" onClick={handleThemeModalCancel}>
+                    <div className="theme-modal-card" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
+                      <div className="theme-modal-header">
+                        <h3>{themeModal.title}</h3>
+                        <button className="theme-modal-close" onClick={handleThemeModalCancel} aria-label="Close">x</button>
+                      </div>
+                      <div className="theme-modal-body">
+                        <p>{themeModal.message}</p>
+                        {themeModal.input && (
+                          <input
+                            type="text"
+                            value={themeModal.inputValue}
+                            onChange={(e) => setThemeModal(prev => ({ ...prev, inputValue: e.target.value }))}
+                            className="theme-modal-input"
+                            placeholder="Enter your name"
+                          />
+                        )}
+                      </div>
+                      <div className="theme-modal-actions">
+                        {themeModal.cancelText && (
+                          <button className="theme-modal-button secondary" onClick={handleThemeModalCancel}>
+                            {themeModal.cancelText}
+                          </button>
+                        )}
+                        <button className="theme-modal-button primary" onClick={handleThemeModalConfirm}>
+                          {themeModal.confirmText}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {showBigMap && (
+                  <div className="map-modal-overlay">
+                    <div className="map-modal-content">
+                      <div className="map-modal-header">
+                        <h3>Site Location: {selectedSite.baseLocation || "Region Map"}</h3>
+                        <button className="close-btn" onClick={() => setShowBigMap(false)}> Close</button>
+                      </div>
+                      <div className="big-map-wrapper">
+                        <MapVisualizer selectedSite={selectedSite} filteredResults={mapFilteredResults} isExpanded={true} />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {toast.visible && (
+                  <div 
+                    className={`glass-toast ${toast.isClosing ? 'slide-out' : 'slide-in'} ${toast.type}`}
+                    onMouseEnter={handleToastMouseEnter}
+                    onMouseLeave={handleToastMouseLeave}
+                  >
+                    <div className={`toast-icon-wrap ${toast.type}`}>
+                      {toast.type === 'success' && <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>}
+                      {toast.type === 'error' && <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>}
+                  {(toast.type !== 'success' && toast.type !== 'error') && <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>}
+                    </div>
+                    <div className="toast-content">
+                      <h4 className="toast-title">{toast.title}</h4>
+                      <p className="toast-message">{toast.message}</p>
+                    </div>
+                    <button className="toast-close-btn" onClick={closeToast} aria-label="Close Notification">
+                      &times;
                 </button>
-              )}
-              <button className="theme-modal-button primary" onClick={handleThemeModalConfirm}>
-                {themeModal.confirmText}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showBigMap && (
-        <div className="map-modal-overlay">
-          <div className="map-modal-content">
-            <div className="map-modal-header">
-              <h3>Site Location: {selectedSite.baseLocation || "Region Map"}</h3>
-              <button className="close-btn" onClick={() => setShowBigMap(false)}> Close</button>
-            </div>
-            <div className="big-map-wrapper">
-              <MapVisualizer selectedSite={selectedSite} filteredResults={filteredResults} isExpanded={true} />
-            </div>
-          </div>
-        </div>
-      )}
-    </DashboardLayout>
-  );
-}
-
-
+                <div className="toast-progress"></div>
+                  </div>
+                )}
+              </DashboardLayout>
+            );
+          }

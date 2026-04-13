@@ -1,6 +1,6 @@
 /**
  * Globe RSC Network Delta Engine - Backend API
- * Version: 3.2 - Scoped Global History + Safe Lock + Compatibility
+ * Version: 3.2 - Antigravity Edition (Scoped History, Safe Lock, Preview Slicing)
  */
 
 const CONFIG = {
@@ -242,7 +242,10 @@ function storeUploadedData(fileName, dataType, rawData, processedData, metadata)
 
     const cleanMetadata = metadata || {};
     cleanMetadata.engineerName = userInfo.displayName;
-    if (Array.isArray(processedData)) cleanMetadata.processedRecords = processedData.length;
+    if (Array.isArray(processedData)) {
+      cleanMetadata.processedRecords = processedData.length;
+      cleanMetadata.previewData = processedData.slice(0, 20);
+    }
 
     dataSheet.appendRow([
       Utilities.getUuid(),

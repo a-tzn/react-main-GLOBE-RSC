@@ -1,14 +1,16 @@
 ﻿import { useState, useMemo, useEffect, useRef, useDeferredValue } from 'react';
+import localforage from 'localforage';
 import useDarkMode from '../../hooks/useDarkMode';
 import useSearchDebounce from '../../hooks/useSearchDebounce';
+import useSmartProgress from '../../hooks/useSmartProgress';
 import { processWirelessAlarms, processTransportAlarms } from '../../services/dataGrouper';
 import {
   storeUploadedData,
   getUserUploadedDataSummary,
   getUploadedDataById,
-  getLatestUserUploadedData,
   getUserInfo,
-  getLastModifiedInfo
+  getLastModifiedInfo,
+  getCachedUserInfo
 } from '../../services/googleAppsScript';
 
 import globeLogoDark from '../../assets/Globe_LogoW.png';
@@ -24,8 +26,6 @@ import { FixedSizeList as List, VariableSizeList } from 'react-window'; // ?? TH
 import * as XLSX from 'xlsx';
 import { useNavigate } from "react-router-dom";
 
-import { parseLocationData, getShortRegionByProvince } from '../../utils/telecom';
-import { cityToProvinceMap } from '../MapDictionary/TelecomDictionaries';
 import DashboardLayout from '../../components/DashboardLayout';
 import DashboardHeaderActions from '../../components/common/DashboardHeaderActions';
 import { ThemedButton, ThemedBadge } from '../../components/common';
@@ -35,8 +35,12 @@ export default function SADashboard() {
   const [monitorFile1, setMonitorFile1] = useState(null); 
   const [monitorFile2, setMonitorFile2] = useState(null); 
   const [isLoading, setIsLoading] = useState(false);
+  const [isStoredDataLoading, setIsStoredDataLoading] = useState(false);
   const [isInitialDataLoading, setIsInitialDataLoading] = useState(true);
   const [isRefreshingSavedData, setIsRefreshingSavedData] = useState(false);
+  const globalDatabaseSyncing = isInitialDataLoading || isRefreshingSavedData || isStoredDataLoading;
+  const databaseProgress = useSmartProgress(globalDatabaseSyncing);
+  const historyLoadProgress = useSmartProgress(isStoredDataLoading);
   const [results, setResults] = useState([]);
   const [dashboardMode, setDashboardMode] = useState('wireless');
   const isWirelessMode = dashboardMode === 'wireless';
@@ -93,15 +97,62 @@ export default function SADashboard() {
     closeThemeModal();
   };
 
+  // Glass Toast Notification State
+  const [toast, setToast] = useState({ visible: false, title: '', message: '', type: 'info', isClosing: false });
+  const toastTimeoutRef = useRef(null);
+  const toastStartTimeRef = useRef(0);
+  const toastRemainingTimeRef = useRef(5000);
+
+  const showToast = (title, message, type = 'info') => {
+    setToast({ visible: true, title, message, type, isClosing: false });
+    toastRemainingTimeRef.current = 5000;
+    toastStartTimeRef.current = Date.now();
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    toastTimeoutRef.current = setTimeout(() => closeToast(), 5000);
+  };
+
+  const closeToast = () => {
+    setToast(prev => ({ ...prev, isClosing: true }));
+    setTimeout(() => {
+      setToast(prev => ({ ...prev, visible: false, isClosing: false }));
+    }, 500); 
+  };
+
   const handleThemeModalCancel = () => {
     themeModal.onCancel?.();
     closeThemeModal();
   };
 
+  const handleToastMouseEnter = () => {
+    if (toast.isClosing) return;
+    if (toastTimeoutRef.current) {
+      clearTimeout(toastTimeoutRef.current);
+      const elapsed = Date.now() - toastStartTimeRef.current;
+      toastRemainingTimeRef.current = Math.max(0, toastRemainingTimeRef.current - elapsed);
+    }
+  };
+
+  const handleToastMouseLeave = () => {
+    if (toast.isClosing) return;
+    toastStartTimeRef.current = Date.now();
+    toastTimeoutRef.current = setTimeout(() => closeToast(), toastRemainingTimeRef.current);
+  };
+
+  const [loadedDataSource, setLoadedDataSource] = useState(null);
+  const [isTableRevealActive, setIsTableRevealActive] = useState(false);
+  const wasDatabaseSyncingRef = useRef(false);
+  const [latestStoredDataId, setLatestStoredDataId] = useState(null);
+  const [expectedResultCount, setExpectedResultCount] = useState(0);
+  const [isFullDataLoading, setIsFullDataLoading] = useState(false);
+  const [isFullDataLoaded, setIsFullDataLoaded] = useState(false);
+  const [showTableLoadingHint, setShowTableLoadingHint] = useState(false);
+  const tableLoadingHintTimerRef = useRef(null);
+
   // Backend integration state
   const [storedData, setStoredData] = useState([]);
-  const [userInfo, setUserInfo] = useState(null);
+  const [userInfo, setUserInfo] = useState(() => getCachedUserInfo());
   const [lastModifiedInfo, setLastModifiedInfo] = useState(null);
+  const [persistedSummaryStats, setPersistedSummaryStats] = useState(null);
   const [mainListSize, setMainListSize] = useState({ width: '100%', height: 600 });
   const [workerFilteredIndices, setWorkerFilteredIndices] = useState([]);
   const [workerReady, setWorkerReady] = useState(false);
@@ -117,44 +168,108 @@ export default function SADashboard() {
   const currentLogo = isDarkMode ? globeLogoDark : globeLogoLight;
   const CACHE_TTL_MS = 5 * 60 * 1000;
   const cacheKey = `site_alert_cache_${dashboardMode}_v1`;
+  const cacheMetaKey = `${cacheKey}_meta`;
+  const cacheDataKey = `${cacheKey}_full`;
+
+  const buildSiteAlertSummaryStats = (rows) => {
+    const safeRows = Array.isArray(rows) ? rows : [];
+    const totalOccurrences = safeRows.reduce((sum, row) => sum + (Number(row?.count) || 0), 0);
+    const uniqueSitesCount = new Set(safeRows.map((row) => row?.name).filter(Boolean)).size;
+    const alarmCountMap = {};
+
+    safeRows.forEach((row) => {
+      const alarm = row?.alert || 'N/A';
+      alarmCountMap[alarm] = (alarmCountMap[alarm] || 0) + (Number(row?.count) || 0);
+    });
+
+    const sortedAlarms = Object.entries(alarmCountMap).sort((a, b) => b[1] - a[1]);
+    return {
+      totalOccurrences,
+      uniqueSitesCount,
+      uniqueAlarmTypes: sortedAlarms.length,
+      mostCriticalAlarm: sortedAlarms[0]?.[0] || 'N/A'
+    };
+  };
   
   const applyStoredProcessedData = (item) => {
     if (!item) return;
     const processedData = Array.isArray(item.processedData) ? item.processedData : [];
     setResults(processedData);
+    setExpectedResultCount(processedData.length);
+    setIsFullDataLoaded(true);
+    setPersistedSummaryStats(item.metadata?.summaryStats || null);
     setSelectedRowDetails(null);
     handleSidebarViewChange('analytics');
     setIsSidebarCollapsed(false);
+    
+    setLoadedDataSource({
+      date: new Date(item.uploadDate || Date.now()).toLocaleDateString(),
+      time: new Date(item.uploadDate || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      engineerName: item.metadata?.engineerName || 'Unknown User'
+    });
   };
 
-  const readCache = () => {
-    try {
-      const raw = localStorage.getItem(cacheKey);
-      if (!raw) return null;
-      const cached = JSON.parse(raw);
-      if (!cached?.timestamp || (Date.now() - cached.timestamp) > CACHE_TTL_MS) return null;
-      return cached;
-    } catch {
-      return null;
+  const saveDashboardCache = async ({
+    nextUserInfo = null,
+    nextStoredData = [],
+    nextLastModifiedInfo = null,
+    latestStoredData = null,
+    latestPreviewData = [],
+    nextSummaryStats = null
+  }) => {
+    const timestamp = Date.now();
+    await localforage.setItem(cacheMetaKey, {
+      userInfo: nextUserInfo,
+      storedData: nextStoredData,
+      lastModifiedInfo: nextLastModifiedInfo,
+      latestPreviewData: Array.isArray(latestPreviewData) ? latestPreviewData : [],
+      persistedSummaryStats: nextSummaryStats,
+      timestamp
+    });
+
+    if (latestStoredData) {
+      await localforage.setItem(cacheDataKey, {
+        latestStoredData,
+        timestamp
+      });
     }
   };
 
-  const writeCache = (payload) => {
-    try {
-      const cachePayload = { ...payload };
-      
-      if (cachePayload.latestStoredData && cachePayload.latestStoredData.processedData) {
-         const slimProcessedData = cachePayload.latestStoredData.processedData.map(item => {
-            const { rawRows, ...rest } = item; 
-            return rest; 
-         });
-         cachePayload.latestStoredData = { ...cachePayload.latestStoredData, processedData: slimProcessedData };
-      }
+  const showTransientTableLoadingHint = () => {
+    setShowTableLoadingHint(true);
+    if (tableLoadingHintTimerRef.current) clearTimeout(tableLoadingHintTimerRef.current);
+    tableLoadingHintTimerRef.current = setTimeout(() => setShowTableLoadingHint(false), 1400);
+  };
 
-      localStorage.setItem(cacheKey, JSON.stringify({ ...cachePayload, timestamp: Date.now() }));
+  const ensureLatestFullDataLoaded = async (reason = 'manual') => {
+    if (isFullDataLoaded && results.length >= expectedResultCount) return results;
+    if (!latestStoredDataId || isFullDataLoading) return null;
+
+    setIsFullDataLoading(true);
+    if (reason === 'scroll' || reason === 'count') {
+      showTransientTableLoadingHint();
+    }
+
+    try {
+      const fullStoredData = await getUploadedDataById(latestStoredDataId, true, dashboardMode);
+      applyStoredProcessedData(fullStoredData);
+      await saveDashboardCache({
+        nextUserInfo: userInfo || getCachedUserInfo() || null,
+        nextStoredData: storedData,
+        nextLastModifiedInfo: lastModifiedInfo,
+        latestStoredData: fullStoredData,
+        latestPreviewData: fullStoredData?.metadata?.previewData || results,
+        nextSummaryStats: fullStoredData?.metadata?.summaryStats || persistedSummaryStats
+      });
+      return Array.isArray(fullStoredData?.processedData) ? fullStoredData.processedData : null;
     } catch (error) {
-      console.warn("?? Cache Write Failed:", error);
-      localStorage.removeItem(cacheKey); 
+      console.error('Failed to lazily load full data:', error);
+      if (reason === 'count') {
+        showToast('Load Error', 'Failed to load full row details from database.', 'error');
+      }
+      return null;
+    } finally {
+      setIsFullDataLoading(false);
     }
   };
 
@@ -165,60 +280,154 @@ export default function SADashboard() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
+  useEffect(() => {
+    const isDatabaseSyncing = isInitialDataLoading || isStoredDataLoading || isRefreshingSavedData;
+    if (wasDatabaseSyncingRef.current && !isDatabaseSyncing && results.length > 0) {
+      setIsTableRevealActive(true);
+      const timeout = setTimeout(() => setIsTableRevealActive(false), 360);
+      return () => clearTimeout(timeout);
+    }
+    if (isDatabaseSyncing) {
+      setIsTableRevealActive(false);
+    }
+    wasDatabaseSyncingRef.current = isDatabaseSyncing;
+  }, [isInitialDataLoading, isStoredDataLoading, isRefreshingSavedData, results.length]);
+
 useEffect(() => {
+  const handleKeyDown = (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+      e.preventDefault();
+      document.querySelector('.search-bar')?.focus();
+    }
+    if (e.key === 'Escape') {
+      setShowBigMap(false);
+    }
+  };
+  window.addEventListener('keydown', handleKeyDown);
+  return () => window.removeEventListener('keydown', handleKeyDown);
+}, []);
+
+  useEffect(() => () => {
+    if (tableLoadingHintTimerRef.current) clearTimeout(tableLoadingHintTimerRef.current);
+  }, []);
+
+  useEffect(() => {
     let isMounted = true;
+    const bootLoaderTimeout = setTimeout(() => {
+      if (isMounted) setIsInitialDataLoading(false);
+    }, 1500);
 
     const loadUserData = async () => {
-      // 1. INSTANT CACHE LOAD
-      const cached = readCache();
-      if (cached && isMounted) {
-        setUserInfo(cached.userInfo || null); // ?? ADDED: Load user from cache
-        setStoredData(cached.storedData || []);
-        setLastModifiedInfo(cached.lastModifiedInfo || null);
-        if (cached.latestStoredData) {
-          applyStoredProcessedData(cached.latestStoredData);
-        }
-        setIsInitialDataLoading(false); 
-      }
+      // 1. INSTANT CACHE LOAD (IndexedDB - 0 Seconds)
+      let hasFreshCache = false;
+      const summaryPromise = getUserUploadedDataSummary(10, dashboardMode, true);
+      const lastModifiedPromise = getLastModifiedInfo(dashboardMode);
+      const userInfoPromise = getUserInfo().catch((err) => {
+        console.warn('Failed to refresh user info:', err);
+        return null;
+      });
 
       try {
-        setIsRefreshingSavedData(true);
-        // ?? ADDED: Fetch getUserInfo() from Google Apps Script
-        const [userData, storedDataList, latestStoredData, lastModified] = await Promise.all([
-          getUserInfo(), 
-          getUserUploadedDataSummary(10, dashboardMode, true),
-          getLatestUserUploadedData(dashboardMode),
-          getLastModifiedInfo(dashboardMode)
-        ]);
-        
-        if (isMounted) {
-          setUserInfo(userData); // ?? ADDED: Set the React state with your Google Identity
-          setStoredData(storedDataList);
-          setLastModifiedInfo(lastModified);
-          if (latestStoredData) {
-            applyStoredProcessedData(latestStoredData);
+        const cachedMeta = await localforage.getItem(cacheMetaKey);
+        const isFresh = Boolean(cachedMeta?.timestamp) && (Date.now() - cachedMeta.timestamp) < CACHE_TTL_MS;
+        if (isFresh && isMounted) {
+          hasFreshCache = true;
+          setUserInfo(cachedMeta.userInfo || getCachedUserInfo() || null);
+          setStoredData(cachedMeta.storedData || []);
+          const latestCachedSummary = Array.isArray(cachedMeta.storedData) && cachedMeta.storedData.length > 0 ? cachedMeta.storedData[0] : null;
+          const cachedPreview = Array.isArray(cachedMeta.latestPreviewData) ? cachedMeta.latestPreviewData : [];
+          const cachedProcessedRecords = Number(latestCachedSummary?.processedCount ?? latestCachedSummary?.metadata?.processedRecords ?? cachedPreview.length);
+          setLatestStoredDataId(latestCachedSummary?.id || null);
+          setExpectedResultCount(Number.isFinite(cachedProcessedRecords) ? cachedProcessedRecords : cachedPreview.length);
+          setIsFullDataLoaded(false);
+          setLastModifiedInfo(cachedMeta.lastModifiedInfo || null);
+          setPersistedSummaryStats(cachedMeta.persistedSummaryStats || null);
+
+          if (Array.isArray(cachedMeta.latestPreviewData) && cachedMeta.latestPreviewData.length > 0) {
+            setResults(cachedMeta.latestPreviewData);
           }
-          
-          writeCache({
-            userInfo: userData, // ?? ADDED: Save user to cache for seamless switching
-            storedData: storedDataList,
-            lastModifiedInfo: lastModified,
-            latestStoredData: latestStoredData || null
+
+          localforage.getItem(cacheDataKey).then((cachedData) => {
+            const sameSnapshot = cachedData?.timestamp && cachedMeta?.timestamp && cachedData.timestamp === cachedMeta.timestamp;
+            if (isMounted && sameSnapshot && cachedData?.latestStoredData) {
+              applyStoredProcessedData(cachedData.latestStoredData);
+            }
+          }).catch((err) => {
+            console.warn('IndexedDB Full Cache Read Failed', err);
           });
+
+          setIsInitialDataLoading(false);
+        } else if (cachedMeta && !isFresh) {
+          await Promise.all([
+            localforage.removeItem(cacheMetaKey),
+            localforage.removeItem(cacheDataKey)
+          ]);
+        } else if (!cachedMeta) {
+          await localforage.removeItem(cacheDataKey);
         }
+      } catch (err) {
+        console.warn('IndexedDB Read Failed', err);
+      }
+
+      // 2. FETCH SUMMARY & PREVIEW (Google Sheets)
+      try {
+        setIsRefreshingSavedData(true);
+
+        const [storedDataList, lastModified] = await Promise.all([
+          summaryPromise,
+          lastModifiedPromise
+        ]);
+
+        if (!isMounted) return;
+
+        setStoredData(storedDataList);
+        setLastModifiedInfo(lastModified);
+
+        const latestSummary = storedDataList.length > 0 ? storedDataList[0] : null;
+        const previewData = Array.isArray(latestSummary?.metadata?.previewData) ? latestSummary.metadata.previewData : [];
+        const summaryStats = latestSummary?.metadata?.summaryStats || null;
+        const processedRecords = Number(latestSummary?.processedCount ?? latestSummary?.metadata?.processedRecords ?? previewData.length);
+        setLatestStoredDataId(latestSummary?.id || null);
+        setExpectedResultCount(Number.isFinite(processedRecords) ? processedRecords : previewData.length);
+        setIsFullDataLoaded(false);
+
+        if (!hasFreshCache && previewData.length > 0) {
+          setResults(previewData);
+          setPersistedSummaryStats(summaryStats);
+          setIsInitialDataLoading(false);
+        } else if (!hasFreshCache) {
+          setPersistedSummaryStats(null);
+          setIsInitialDataLoading(false);
+        }
+
+        const userData = await userInfoPromise;
+        if (isMounted && userData) {
+          setUserInfo(userData);
+        }
+
+        // Keep preview rows interactive; full rows are loaded lazily on demand.
+        await saveDashboardCache({
+          nextUserInfo: userData || getCachedUserInfo() || null,
+          nextStoredData: storedDataList,
+          nextLastModifiedInfo: lastModified,
+          latestPreviewData: previewData,
+          nextSummaryStats: summaryStats
+        });
       } catch (error) {
         console.error('Failed to sync with database:', error);
       } finally {
         if (isMounted) {
           setIsRefreshingSavedData(false);
-          setIsInitialDataLoading(false); 
+          setIsInitialDataLoading(false);
         }
       }
     };
+
     loadUserData();
 
     return () => {
       isMounted = false;
+      clearTimeout(bootLoaderTimeout);
     };
   }, [dashboardMode]);
 
@@ -419,6 +628,10 @@ useEffect(() => {
     setIsLoading(true);
     setResults([]);
     setSelectedRowDetails(null);
+    setLoadedDataSource(null);
+    setIsFullDataLoaded(true);
+    setLatestStoredDataId(null);
+    setExpectedResultCount(0);
 
     try {
       const nmsData = await readUniversalFile(monitorFile1);
@@ -444,10 +657,14 @@ useEffect(() => {
         count: Number(item.count) || 1, 
         rawRows: item.rawRows || []
       }));
+      const summaryStats = buildSiteAlertSummaryStats(safeProcessedData);
 
       // 3. Continue with the standard save sequence
       if (result.success && safeProcessedData.length > 0) {
         setResults(safeProcessedData);
+        setExpectedResultCount(safeProcessedData.length);
+        setIsFullDataLoaded(true);
+        setPersistedSummaryStats(summaryStats);
         handleSidebarViewChange('analytics');
         setIsSidebarCollapsed(false);
 
@@ -465,7 +682,8 @@ useEffect(() => {
             processedRecords: safeProcessedData.length,
             dashboardMode,
             timestamp: new Date().toISOString(),
-            engineerName
+            engineerName,
+            summaryStats
           }
         )
           .then(async () => {
@@ -475,15 +693,18 @@ useEffect(() => {
             ]);
             setStoredData(updatedStoredData);
             setLastModifiedInfo(lastModified);
-            writeCache({
-              userInfo,
-              storedData: updatedStoredData,
-              lastModifiedInfo: lastModified,
+            saveDashboardCache({
+              nextUserInfo: userInfo || getCachedUserInfo() || null,
+              nextStoredData: updatedStoredData,
+              nextLastModifiedInfo: lastModified,
               latestStoredData: {
                 processedData: safeProcessedData,
-                fileName: fileNames
-              }
-            });
+                fileName: fileNames,
+                metadata: { summaryStats }
+              },
+              latestPreviewData: safeProcessedData,
+              nextSummaryStats: summaryStats
+            }).catch((err) => console.warn('IndexedDB Write Failed', err));
           })
           .catch((storeError) => {
             console.error('Failed to store data:', storeError);
@@ -600,26 +821,65 @@ useEffect(() => {
 
   const handleLoadStoredData = async (storedDataItem) => {
     try {
-      setIsLoading(true);
+      setIsStoredDataLoading(true);
+      setLatestStoredDataId(storedDataItem?.id || null);
       const fullStoredData = await getUploadedDataById(storedDataItem.id, true, dashboardMode);
       applyStoredProcessedData(fullStoredData);
-      writeCache({
-        userInfo,
-        storedData,
-        lastModifiedInfo,
-        latestStoredData: fullStoredData
-      });
-      setIsLoading(false);
+      saveDashboardCache({
+        nextUserInfo: userInfo || getCachedUserInfo() || null,
+        nextStoredData: storedData,
+        nextLastModifiedInfo: lastModifiedInfo,
+        latestStoredData: fullStoredData,
+        latestPreviewData: fullStoredData?.metadata?.previewData || results,
+        nextSummaryStats: fullStoredData?.metadata?.summaryStats || persistedSummaryStats
+      }).catch((err) => console.warn('IndexedDB Write Failed', err));
+      
+      showToast(
+        'Data Loaded',
+        `Loaded data from: ${fullStoredData.fileName}\n${fullStoredData.processedData?.length || 0} results loaded.`,
+        'success'
+      );
     } catch (error) {
-      showThemeModal({
-        title: 'Load Error',
-        message: `Error loading stored data: ${error.message}`,
-        type: 'error',
-        confirmText: 'OK'
-      });
-      setIsLoading(false);
+      showToast('Load Error', `Error loading stored data: ${error.message}`, 'error');
+    } finally {
+      setIsStoredDataLoading(false);
     }
   };
+
+  const renderHistoryLoadingSkeleton = () => (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+      <div style={{ background: 'var(--bg-primary)', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-light)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+          <span>Loading data from history...</span>
+          <span>{Math.round(historyLoadProgress)}%</span>
+        </div>
+        <div className="smart-progress-track">
+          <div className="smart-progress-fill" style={{ width: `${historyLoadProgress}%` }}></div>
+        </div>
+      </div>
+      {[...Array(4)].map((_, idx) => (
+        <div
+          key={`sa-history-skeleton-${idx}`}
+          style={{
+            background: 'var(--bg-primary)',
+            padding: '12px',
+            borderRadius: '8px',
+            border: '1px solid var(--border-light)'
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+            <div className="skeleton-bar" style={{ width: '62%', height: '12px', borderRadius: '4px' }}></div>
+            <div className="skeleton-bar" style={{ width: '22%', height: '10px', borderRadius: '4px' }}></div>
+          </div>
+          <div className="skeleton-bar" style={{ width: '78%', height: '10px', borderRadius: '4px', marginBottom: '10px' }}></div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div className="skeleton-bar" style={{ width: '42%', height: '10px', borderRadius: '4px' }}></div>
+            <div className="skeleton-bar" style={{ width: '66px', height: '24px', borderRadius: '12px' }}></div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
 
   const handleRefreshStoredData = async () => {
     try {
@@ -628,12 +888,23 @@ useEffect(() => {
         getLastModifiedInfo(dashboardMode)
       ]);
       setStoredData(updatedStoredData);
+      const latestSummary = updatedStoredData.length > 0 ? updatedStoredData[0] : null;
+      const refreshedPreview = Array.isArray(latestSummary?.metadata?.previewData) ? latestSummary.metadata.previewData : [];
+      const refreshedProcessedCount = Number(latestSummary?.processedCount ?? latestSummary?.metadata?.processedRecords ?? refreshedPreview.length);
+      setLatestStoredDataId(latestSummary?.id || null);
+      setExpectedResultCount(Number.isFinite(refreshedProcessedCount) ? refreshedProcessedCount : refreshedPreview.length);
+      if (refreshedPreview.length > 0) {
+        setResults(refreshedPreview);
+        setIsFullDataLoaded(false);
+      }
       setLastModifiedInfo(lastModified);
-      writeCache({
-        userInfo,
-        storedData: updatedStoredData,
-        lastModifiedInfo: lastModified
-      });
+      saveDashboardCache({
+        nextUserInfo: userInfo || getCachedUserInfo() || null,
+        nextStoredData: updatedStoredData,
+        nextLastModifiedInfo: lastModified,
+        latestPreviewData: results,
+        nextSummaryStats: persistedSummaryStats
+      }).catch((err) => console.warn('IndexedDB Write Failed', err));
     } catch (error) {
       console.error('Failed to refresh stored data:', error);
     }
@@ -646,8 +917,8 @@ useEffect(() => {
     return drillDownData.rawRows.filter(rawRow => Object.values(rawRow).some(val => String(val).toLowerCase().includes(term)));
   }, [drillDownData, modalSearchTerm]);
 
-  const totalOccurrences = useMemo(() => results.reduce((sum, row) => sum + row.count, 0), [results]);
-  const uniqueSitesCount = useMemo(() => new Set(results.map(row => row.name)).size, [results]);
+  const liveTotalOccurrences = useMemo(() => results.reduce((sum, row) => sum + row.count, 0), [results]);
+  const liveUniqueSitesCount = useMemo(() => new Set(results.map(row => row.name)).size, [results]);
 
   const alarmStats = useMemo(() => {
     if (!results || results.length === 0) return [];
@@ -670,6 +941,11 @@ useEffect(() => {
       totalPercentage: ((stat.count / totalAlarms) * 100).toFixed(1) 
     }));
   }, [results]);
+
+  const totalOccurrences = persistedSummaryStats?.totalOccurrences ?? liveTotalOccurrences;
+  const uniqueSitesCount = persistedSummaryStats?.uniqueSitesCount ?? liveUniqueSitesCount;
+  const uniqueAlarmTypesCount = persistedSummaryStats?.uniqueAlarmTypes ?? alarmStats.length;
+  const mostCriticalAlarm = persistedSummaryStats?.mostCriticalAlarm || alarmStats[0]?.name || 'N/A';
 
   const topSitesData = useMemo(() => {
     if (selectedGraphAlarm) {
@@ -717,14 +993,37 @@ useEffect(() => {
     });
   }, [workerReady, deferredSearchTerm, results.length]);
 
-  const filteredResults = useMemo(() => {
-    if (!workerReady) return fallbackFilteredResults;
-    return workerFilteredIndices
-      .map((index) => results[index])
-      .filter(Boolean);
-  }, [workerReady, fallbackFilteredResults, workerFilteredIndices, results]);
+    const filteredResults = useMemo(() => {
+        // 1. Fallback if worker is broken
+        if (!workerReady) return fallbackFilteredResults;
+        // If the worker is still calculating the initial load, bypass it and show the data instantly
+        if (workerFilteredIndices.length === 0 && results.length > 0 && !deferredSearchTerm) {
+          return results;
+        }
+
+        // 3. Normal Worker Operation
+        return workerFilteredIndices
+          .map((index) => results[index])
+          .filter(Boolean);
+      }, [workerReady, fallbackFilteredResults, workerFilteredIndices, results, deferredSearchTerm]);
 
   const isSearchUpdating = isSearchPending || deferredSearchTerm !== debouncedTerm || isWorkerBusy;
+
+  const handleMainListScroll = ({ scrollOffset, scrollUpdateWasRequested }) => {
+    if (scrollUpdateWasRequested) return;
+    if (isFullDataLoaded || isFullDataLoading) return;
+    if (!latestStoredDataId) return;
+    if (expectedResultCount <= results.length) return;
+
+    const rowHeight = 70;
+    const visibleHeight = Number(mainListSize.height) || 0;
+    const estimatedTotalHeight = filteredResults.length * rowHeight;
+    const nearBottom = scrollOffset + visibleHeight >= Math.max(0, estimatedTotalHeight - rowHeight * 2);
+
+    if (nearBottom) {
+      ensureLatestFullDataLoaded('scroll');
+    }
+  };
 
   const openGraphModal = () => {
     if (expandBtnRef.current) {
@@ -746,14 +1045,29 @@ useEffect(() => {
     }, 350); 
   };
 
-  const openDrillDownModal = (e, row) => {
-    e.stopPropagation(); 
-    setModalSearchTerm(""); 
-    setDrillDownData(row);
+  const openDrillDownModal = async (e, row) => {
+    e.stopPropagation();
+    if (isFullDataLoading) return;
+    setModalSearchTerm("");
+
     const rect = e.target.getBoundingClientRect();
     const originXPercent = (((rect.left + rect.width / 2) - (window.innerWidth * 0.075)) / (window.innerWidth * 0.85)) * 100;
     const originYPercent = (((rect.top + rect.height / 2) - (window.innerHeight * 0.05)) / (window.innerHeight * 0.9)) * 100;
     setDrillDownOrigin(`${originXPercent}% ${originYPercent}%`);
+
+    let targetRow = row;
+    const needsFullRows = !Array.isArray(row?.rawRows) || row.rawRows.length === 0;
+    if (needsFullRows) {
+      showToast('Loading data...', 'Importing complete row details from database.', 'info');
+      const fullRows = await ensureLatestFullDataLoaded('count');
+      if (!fullRows) return;
+      const rowKey = `${row.pla || ''}|${row.name || ''}|${row.alert || ''}|${row.dn || ''}`;
+      targetRow = fullRows.find((candidate) => (
+        `${candidate?.pla || ''}|${candidate?.name || ''}|${candidate?.alert || ''}|${candidate?.dn || ''}` === rowKey
+      )) || row;
+    }
+
+    setDrillDownData(targetRow);
     setIsDrillDownRendered(true);
     setTimeout(() => setIsDrillDownVisible(true), 10);
   };
@@ -794,77 +1108,161 @@ useEffect(() => {
     };
     const columnStyle = { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', paddingRight: '15px', boxSizing: 'border-box' };
 
-    return (
-      <div style={rowStyle} className="row-hover" onClick={() => { setSelectedRowDetails(row); handleSidebarViewChange('details'); setIsSidebarCollapsed(false); }}>
-        <div style={{ ...columnStyle, width: '12%', fontWeight: 'bold', color: dashboardMode === 'transport' ? 'var(--color-danger-light)' : 'var(--text-primary)' }}>
-           {row.pla || "N/A"}
-        </div>
-        <div style={{ ...columnStyle, width: '23%', color: 'var(--color-info)', fontWeight: 'bold' }}>
-           {row.name || "N/A"}
-        </div>
-        <div style={{ ...columnStyle, width: '20%', fontFamily: 'ARIAL', color: 'var(--text-primary)' }}>
-           {row.alert || "N/A"}
-        </div>
-        <div style={{ ...columnStyle, width: '37%', fontFamily: 'monospace', fontSize: '1rem', color: 'var(--text-primary)' }}>
-           {row.dn || "N/A"}
-        </div>
-        <div style={{ ...columnStyle, width: '8%', textAlign: 'center' }}>
-           <ThemedBadge variant="danger" onClick={(e) => openDrillDownModal(e, row)} title="Click to view all occurrences">
-             {row.count}
-           </ThemedBadge>
-        </div>
-      </div>
-    );
-  };
+          return (
+            <div style={rowStyle} className="row-hover" onClick={() => { setSelectedRowDetails(row); handleSidebarViewChange('details'); setIsSidebarCollapsed(false); }}>
+              <div style={{ ...columnStyle, width: '12%', fontWeight: 'bold', color: dashboardMode === 'transport' ? 'var(--color-danger-light)' : 'var(--text-primary)' }}>
+                {row.pla || "N/A"}
+              </div>
+              <div style={{ ...columnStyle, width: '23%', color: 'var(--color-info)', fontWeight: 'bold' }}>
+                {row.name || "N/A"}
+              </div>
+              <div style={{ ...columnStyle, width: '20%', fontFamily: 'ARIAL', color: 'var(--text-primary)' }}>
+                {row.alert || "N/A"}
+              </div>
+              <div style={{ ...columnStyle, width: '37%', fontFamily: 'monospace', fontSize: '1rem', color: 'var(--text-primary)' }}>
+                {row.dn || "N/A"}
+              </div>
+              <div style={{ ...columnStyle, width: '8%', textAlign: 'center' }}>
+                <ThemedBadge
+                  variant="danger"
+                  onClick={(e) => openDrillDownModal(e, row)}
+                  disabled={isFullDataLoading}
+                  title={isFullDataLoading ? "Loading full data..." : "Click to view all occurrences"}
+                >
+                  {row.count}
+                </ThemedBadge>
+              </div>
+            </div>
+          );
+        };
 
-  const VirtualizedModalRow = ({ index, style }) => {
-    const raw = filteredModalRows[index];
-    const validEntries = getValidEntries(raw);
+        const VirtualizedModalRow = ({ index, style }) => {
+          const raw = filteredModalRows[index];
+          const validEntries = getValidEntries(raw);
 
-    return (
-      <div style={{ ...style, padding: '0 5px 20px 5px', boxSizing: 'border-box' }}>
-        <div style={{ background: 'var(--bg-input)', padding: '25px', borderRadius: '12px', border: '1px solid var(--border-light)', boxSizing: 'border-box', height: '100%' }}>
-          <div style={{ color: isDarkMode ? '#ffffff' : 'var(--brand-purple)', fontWeight: 'bold', fontSize: '1.1rem', marginBottom: '15px', borderBottom: '1px solid var(--border-light)', paddingBottom: '10px' }}>
+          return (
+  <div style={{ ...style, padding: '0 5px 20px 5px', boxSizing: 'border-box' }}>
+    <div style={{
+      background: isDarkMode ? 'var(--bg-primary)' : 'var(--bg-input)',
+      padding: '24px',
+      borderRadius: '12px',
+      border: '1px solid var(--border-light)',
+      boxShadow: isDarkMode ? 'inset 0 1px 0 rgba(255,255,255,0.05), 0 8px 24px rgba(0,0,0,0.2)' : 'none',
+      boxSizing: 'border-box',
+      height: '100%',
+      display: 'flex',
+      flexDirection: 'column'
+    }}>
+
+      {/* --- 1. HERO BANNER: The most important data highlighted at the top --- */}
+      <div style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'flex-start',
+        borderBottom: '1px solid var(--border-light)',
+        paddingBottom: '16px',
+        marginBottom: '16px',
+        flexShrink: 0
+      }}>
+        <div>
+          <div style={{ color: 'var(--text-secondary)', fontSize: '0.75rem', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '6px' }}>
             Occurrence #{index + 1}
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '12px' }}>
-            {validEntries.map(([key, value]) => {
-              const isTimeCol = key.toLowerCase().includes('time') || key.toLowerCase().includes('date') || key.toLowerCase().includes('stamp');
-              let displayShort = String(value);
-              let displayOriginal = null;
-
-              if (isTimeCol && typeof value === 'number' && value > 30000) {
-                const dateObj = new Date(Math.round((value - 25569) * 86400 * 1000));
-                const m = dateObj.getUTCMonth() + 1;
-                const d = dateObj.getUTCDate();
-                const y = String(dateObj.getUTCFullYear()).slice(-2); 
-                const hh = String(dateObj.getUTCHours()).padStart(2, '0');
-                const mm = String(dateObj.getUTCMinutes()).padStart(2, '0');
-                const ss = String(dateObj.getUTCSeconds()).padStart(2, '0');
-                displayOriginal = `${m}/${d}/${y} ${hh}:${mm}:${ss}`; 
-                displayShort = `${m}/${d}/${y} ${hh}:${mm}`; 
+          <div style={{ color: 'var(--text-primary)', fontSize: '1.25rem', fontWeight: 'bold', letterSpacing: '0.5px' }}>
+            {/* Automatically find and feature the Alarm Text */}
+            {validEntries.find(([k]) => k.toUpperCase() === 'ALARM TEXT')?.[1] || 'UNKNOWN ALARM'}
+          </div>
+        </div>
+        
+        <div style={{ textAlign: 'right' }}>
+           {/* Automatically find the Severity and color-code the badge */}
+           {(() => {
+              const sev = validEntries.find(([k]) => k.toUpperCase() === 'SEVERITY')?.[1] || 'N/A';
+              const sevUpper = String(sev).toUpperCase();
+              let sevColor = 'var(--text-secondary)'; // Default
+              let sevBg = 'rgba(255,255,255,0.05)';
+              
+              if (sevUpper === 'CRITICAL') {
+                  sevColor = 'var(--color-danger)';
+                  sevBg = 'var(--badge-danger-bg)';
+              } else if (sevUpper === 'MAJOR') {
+                  sevColor = 'var(--color-warning)';
+                  sevBg = 'rgba(245, 158, 11, 0.1)'; // Amber tint
               }
 
               return (
-                  <div key={key} style={{ background: 'var(--bg-primary)', padding: '12px 16px', borderRadius: '8px', border: '1px solid var(--border-light)', display: 'flex', flexDirection: 'column', height: '120px', boxSizing: 'border-box' }}>
-                    <span style={{ color: 'var(--text-secondary)', fontSize: '0.65rem', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 'bold', marginBottom: '6px', flexShrink: 0 }}>{key}</span>
-                    <div style={{ flex: 1, overflowY: 'auto', paddingRight: '5px', WebkitMaskImage: 'linear-gradient(to bottom, black 65%, transparent 100%)', maskImage: 'linear-gradient(to bottom, black 65%, transparent 100%)' }} className="custom-scrollbar">
-                      {displayOriginal ? (
-                        <div style={{ display: 'flex', flexDirection: 'column' }}>
-                          <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Original: {displayOriginal}</span>
-                          <span style={{ fontWeight: 'bold', color: 'var(--brand-purple)', fontSize: '1rem', marginTop: '2px' }}>{displayShort}</span>
-                        </div>
-                      ) : (
-                        <span style={{ fontWeight: '600', fontSize: '0.90rem', color: 'var(--text-primary)', wordBreak: 'break-word', lineHeight: '1.4' }}>{displayShort}</span>
-                      )}
-                    </div>
-                  </div>
+                <div style={{
+                  background: isDarkMode ? sevBg : 'rgba(0,0,0,0.05)',
+                  padding: '6px 14px',
+                  borderRadius: '6px',
+                  color: sevColor,
+                  fontWeight: 'bold',
+                  fontSize: '0.9rem',
+                  border: `1px solid ${sevColor}40` // Adds a faint glowing border matching the text
+                }}>
+                  Severity: {sev}
+                </div>
               );
-            })}
-          </div>
+           })()}
         </div>
       </div>
-    );
+
+      {/* --- 2. METADATA LIST: Clean, borderless grid for fast scanning --- */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(4, 1fr)', /* 4 columns looks perfectly balanced here */
+        gap: '24px 16px',
+        overflowY: 'auto',
+        paddingRight: '8px'
+      }} className="custom-scrollbar">
+        
+        {validEntries.map(([key, value]) => {
+          const upperKey = key.toUpperCase();
+          
+          // Skip the keys we already featured in the Hero Banner so we don't duplicate them
+          if (upperKey === 'ALARM TEXT' || upperKey === 'SEVERITY') return null;
+
+          const isTimeCol = key.toLowerCase().includes('time') || key.toLowerCase().includes('date') || key.toLowerCase().includes('stamp');
+          let displayShort = String(value);
+          let displayOriginal = null;
+
+          // Keep your existing excellent Excel-date parsing logic
+          if (isTimeCol && typeof value === 'number' && value > 30000) {
+            const dateObj = new Date(Math.round((value - 25569) * 86400 * 1000));
+            const m = dateObj.getUTCMonth() + 1;
+            const d = dateObj.getUTCDate();
+            const y = String(dateObj.getUTCFullYear()).slice(-2);
+            const hh = String(dateObj.getUTCHours()).padStart(2, '0');
+            const mm = String(dateObj.getUTCMinutes()).padStart(2, '0');
+            const ss = String(dateObj.getUTCSeconds()).padStart(2, '0');
+            displayOriginal = `${m}/${d}/${y} ${hh}:${mm}:${ss}`;
+            displayShort = `${m}/${d}/${y} ${hh}:${mm}`;
+          }
+
+          return (
+            <div key={key} style={{ display: 'flex', flexDirection: 'column' }}>
+              <span style={{ color: 'var(--text-secondary)', fontSize: '0.65rem', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 'bold', marginBottom: '6px' }}>
+                {key}
+              </span>
+              
+              {displayOriginal ? (
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  <span style={{ fontWeight: '600', color: 'var(--text-primary)', fontSize: '0.9rem' }}>{displayShort}</span>
+                  <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '2px' }}>Orig: {displayOriginal}</span>
+                </div>
+              ) : (
+                <span style={{ fontWeight: '600', fontSize: '0.9rem', color: 'var(--text-primary)', wordBreak: 'break-word', lineHeight: '1.4' }}>
+                  {displayShort}
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      
+    </div>
+  </div>
+);
   };
 
   const CustomGraphTooltip = ({ active, payload }) => {
@@ -889,7 +1287,7 @@ useEffect(() => {
   };
 
   // ?? 1. ALL VARIABLES MUST BE DEFINED FIRST
-  const currentUserName = userInfo?.displayName || userInfo?.name || "Unknown User";
+  const currentUserName = userInfo?.displayName || userInfo?.name || "Workspace User";
   const currentUserEmail = userInfo?.userId || "user@globe.com.ph"; 
   const myProcessedData = storedData ? storedData.filter(item => item.userId === currentUserEmail) : [];
   
@@ -931,12 +1329,61 @@ const headerActions = (
 );
 
   return (
-    <DashboardLayout isLoading={isLoading || isInitialDataLoading} logo={currentLogo} onLogoClick={() => navigate("/")} headerActions={headerActions}>
+    <DashboardLayout isLoading={false} logo={currentLogo} onLogoClick={() => navigate("/")} headerActions={headerActions}>
       <style>{`
         .custom-scrollbar::-webkit-scrollbar { width: 8px; height: 8px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, 0.3); border-radius: 4px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(128, 128, 128, 0.6); }
+        .custom-scrollbar::-webkit-scrollbar-track { background: rgba(15, 23, 42, 0.08); border-radius: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(15, 23, 42, 0.38); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(15, 23, 42, 0.52); border: 2px solid transparent; background-clip: padding-box; }
+        .custom-scrollbar { scrollbar-width: thin; scrollbar-color: rgba(15, 23, 42, 0.38) rgba(15, 23, 42, 0.08); scrollbar-gutter: stable both-edges; }
+        body.dark-mode .custom-scrollbar::-webkit-scrollbar-track { background: rgba(255, 255, 255, 0.08); }
+        body.dark-mode .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.28); border: 2px solid transparent; background-clip: padding-box; }
+        body.dark-mode .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.42); border: 2px solid transparent; background-clip: padding-box; }
+        body.dark-mode .custom-scrollbar { scrollbar-color: rgba(255, 255, 255, 0.28) rgba(255, 255, 255, 0.08); }
+        
+        /* 🚀 PREMIUM SKELETON SHIMMER */
+        .skeleton-row { opacity: 0.8; }
+        .skeleton-bar { background: rgba(15, 23, 42, 0.08); position: relative; overflow: hidden; border: none; }
+        body.dark-mode .skeleton-bar { background: rgba(255, 255, 255, 0.06); }
+        .skeleton-bar::after { 
+          content: ""; position: absolute; top: 0; left: 0; width: 100%; height: 100%; 
+          background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.8) 50%, transparent 100%); 
+          transform: translateX(-100%);
+          animation: skeleton-shimmer 1.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+        }
+        body.dark-mode .skeleton-bar::after { 
+          background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.15) 50%, transparent 100%); 
+        }
+        @keyframes skeleton-shimmer { 100% { transform: translateX(100%); } }
+        
+        /* 🚀 PREMIUM GLASS TOAST */
+        .glass-toast { position: fixed; top: 24px; right: 24px; z-index: 10000; background: linear-gradient(135deg, rgba(255, 255, 255, 0.6) 0%, rgba(255, 255, 255, 0.25) 100%); backdrop-filter: blur(32px) saturate(200%); -webkit-backdrop-filter: blur(32px) saturate(200%); border: 1px solid rgba(255, 255, 255, 0.7); box-shadow: inset 1px 1px 2px rgba(255, 255, 255, 0.9), 0 20px 40px rgba(31, 38, 135, 0.15), 0 5px 15px rgba(0, 0, 0, 0.08); border-radius: 16px; padding: 16px 20px; min-width: 320px; max-width: 400px; display: flex; align-items: flex-start; gap: 16px; color: var(--text-primary); overflow: hidden; }
+        .glass-toast.success { border-left: 4px solid #0db15c; }
+        .glass-toast.error { border-left: 4px solid #f02849; }
+        .toast-icon-wrap { display: flex; align-items: center; justify-content: center; width: 42px; height: 42px; border-radius: 12px; flex-shrink: 0; background: rgba(128, 128, 128, 0.1); }
+        .toast-icon-wrap.success { background: rgba(13, 177, 92, 0.15); color: #0db15c; }
+        .toast-icon-wrap.error { background: rgba(240, 40, 73, 0.15); color: #f02849; }
+        .toast-content { flex: 1; display: flex; flex-direction: column; gap: 4px; margin-top: 2px; }
+        .toast-title { margin: 0; font-size: 1.05rem; font-weight: 700; color: var(--text-primary); letter-spacing: 0.3px; }
+        .toast-message { margin: 0; font-size: 0.85rem; color: var(--text-secondary); white-space: pre-wrap; line-height: 1.4; }
+        body.dark-mode .glass-toast { background: linear-gradient(135deg, rgba(17, 28, 68, 0.85) 0%, rgba(17, 28, 68, 0.65) 100%); border: 1px solid rgba(255, 255, 255, 0.15); box-shadow: inset 1px 1px 2px rgba(255, 255, 255, 0.15), 0 20px 40px rgba(0, 0, 0, 0.6), 0 5px 15px rgba(0, 0, 0, 0.4); }
+        body.dark-mode .glass-toast.success { border-left-color: #20d478; }
+        body.dark-mode .glass-toast.error { border-left-color: #ff4d6a; }
+        body.dark-mode .toast-icon-wrap.success { background: rgba(13, 177, 92, 0.25); color: #20d478; }
+        body.dark-mode .toast-icon-wrap.error { background: rgba(240, 40, 73, 0.25); color: #ff4d6a; }
+        .toast-progress { position: absolute; bottom: 0; left: 0; height: 4px; background: var(--text-secondary); opacity: 0.3; width: 100%; animation: toastProgress 5s linear forwards; }
+        .glass-toast.success .toast-progress { background: #0db15c; opacity: 0.6; }
+        .glass-toast.error .toast-progress { background: #f02849; opacity: 0.6; }
+        body.dark-mode .glass-toast.success .toast-progress { background: #20d478; }
+        body.dark-mode .glass-toast.error .toast-progress { background: #ff4d6a; }
+        @keyframes toastProgress { 0% { width: 100%; } 100% { width: 0%; } }
+        .glass-toast:hover .toast-progress { animation-play-state: paused; }
+        .glass-toast.slide-in { animation: toastSlideInBounce 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) forwards; }
+        .glass-toast.slide-out { animation: toastSlideOut 0.5s cubic-bezier(0.4, 0, 0.2, 1) forwards; }
+        @keyframes toastSlideInBounce { 0% { transform: translateX(150%); opacity: 0; } 100% { transform: translateX(0); opacity: 1; } }
+        @keyframes toastSlideOut { 0% { transform: translateX(0); opacity: 1; } 100% { transform: translateX(150%); opacity: 0; } }
+        .toast-close-btn { background: transparent; border: none; color: var(--text-secondary); cursor: pointer; font-size: 1.5rem; padding: 0; line-height: 1; margin-top: 0; margin-right: -4px; transition: color 0.2s, transform 0.2s; }
+        .toast-close-btn:hover { color: #f02849; transform: scale(1.15); }
       `}</style>
 
       <main className="main-layout" style={{ display: 'flex', overflow: 'hidden', transition: 'gap 0.4s cubic-bezier(0.4, 0, 0.2, 1)', gap: isSidebarCollapsed ? '0px' : '' }}>
@@ -1029,7 +1476,25 @@ const headerActions = (
 
               <div style={getSidebarPanelStyle('analytics')}>
                 <div style={sidebarInnerCardStyle}>
-                  {alarmStats.length > 0 ? (
+                   {((isInitialDataLoading || isLoading || isStoredDataLoading) && results.length === 0) ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
+                        <h3 style={{ margin: 0, fontSize: '1.1rem', color: 'var(--text-primary)' }}>Top Alarms</h3>
+                        <div className="skeleton-bar" style={{ width: '60px', height: '24px', borderRadius: '4px' }}></div>
+                      </div>
+                      <div className="custom-scrollbar" style={{ display: 'flex', flexDirection: 'column', gap: '12px', overflowY: 'auto', overflowX: 'hidden', paddingRight: '5px' }}>
+                        {[...Array(5)].map((_, i) => (
+                          <div key={i} style={{ width: '100%', background: 'var(--bg-primary)', padding: '10px', borderRadius: '8px', border: '1px solid var(--border-light)', boxSizing: 'border-box' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+                              <div className="skeleton-bar" style={{ height: '12px', width: '60%', borderRadius: '4px' }}></div>
+                              <div className="skeleton-bar" style={{ height: '12px', width: '15%', borderRadius: '4px' }}></div>
+                            </div>
+                            <div className="skeleton-bar" style={{ height: '6px', width: '100%', borderRadius: '3px' }}></div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : alarmStats.length > 0 ? (
                     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
                         <h3 style={{ margin: 0, fontSize: '1.1rem', color: 'var(--text-primary)' }}>Top Alarms</h3>
@@ -1117,7 +1582,7 @@ const headerActions = (
                       <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '5px' }}>Last Data Modification:</div>
                       <div style={{ fontWeight: 'bold', color: 'var(--color-danger)' }}>{lastModifiedName}</div>
                       <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                        {lastModifiedInfo.action} Ã¢â‚¬Â¢ {lastModifiedInfo.fileName}
+                        {lastModifiedInfo.action} â€¢ {lastModifiedInfo.fileName}
                       </div>
                       <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
                         {new Date(lastModifiedInfo.timestamp).toLocaleString()}
@@ -1126,7 +1591,9 @@ const headerActions = (
                   )}
 
                   <div className="custom-scrollbar" style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
-                    {storedData.length > 0 ? (
+                    {isStoredDataLoading ? (
+                      renderHistoryLoadingSkeleton()
+                    ) : storedData.length > 0 ? (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                         {storedData.map((item, index) => (
                           <div key={item.id} style={{ background: 'var(--bg-primary)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-light)', cursor: 'pointer', transition: 'all 0.2s' }} onClick={() => handleLoadStoredData(item)} className="row-hover">
@@ -1147,7 +1614,7 @@ const headerActions = (
 
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                               <div style={{ fontSize: '0.8rem', color: 'var(--color-info)' }}>
-                                {item.dataType} Ã¢â‚¬Â¢ {item.processedCount ?? item.metadata?.processedRecords ?? 0} results
+                                {item.dataType} â€¢ {item.processedCount ?? item.metadata?.processedRecords ?? 0} results
                               </div>
                               <div style={{ fontSize: '0.7rem', color: 'var(--bg-primary)', background: 'var(--text-primary)', fontWeight: 'bold', padding: '4px 10px', borderRadius: '12px' }}>
                                 Load Data
@@ -1159,7 +1626,7 @@ const headerActions = (
                       </div>
                     ) : (
                       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '200px', color: 'var(--text-secondary)' }}>
-                        <div style={{ fontSize: '2rem', marginBottom: '10px' }}>[📁]</div>
+                        <div style={{ fontSize: '2rem', marginBottom: '10px' }}>[??]</div>
                         <div>No stored data found</div>
                         <div style={{ fontSize: '0.8rem', marginTop: '5px' }}>Process some data to see it here</div>
                       </div>
@@ -1182,10 +1649,48 @@ const headerActions = (
                   <h2 style={{ margin: 0, fontSize: '1.2rem', color: 'var(--text-inverse)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {dashboardMode === 'wireless' ? 'Wireless Critical Alerts' : 'Transport Critical Alerts'} ({filteredResults.length})
                   </h2>
+                  
+                  {loadedDataSource && results.length > 0 && (
+                    <div
+                      className="loaded-data-badge"
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        padding: '6px 12px',
+                        borderRadius: '20px',
+                        border: '2px solid var(--border-light)',
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis'
+                      }}
+                    >
+                      <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        style={{ color: 'var(--text-secondary)', flexShrink: 0 }}
+                      >
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <polyline points="12 6 12 12 16 14"></polyline>
+                      </svg>
+                      <span style={{ fontSize: '0.75em', color: 'white', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        Ran by: <span style={{ color: 'white', fontWeight: 600, marginRight: '4px' }}>{loadedDataSource.engineerName}</span>
+                        | <span style={{ color: 'white', fontWeight: 600, marginLeft: '4px' }}>{loadedDataSource.date} {loadedDataSource.time}</span>
+                      </span>
+                    </div>
+                  )}
                </div>
               <div style={{ position: 'relative', flex: '1 1 240px', minWidth: 0, maxWidth: '320px', width: '100%' }}>
-                <input type="text" className="search-bar" placeholder="Search ID, Name, or Alarm..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} disabled={results.length === 0} style={{ outline: 'none', width: '100%', boxSizing: 'border-box', paddingRight: '92px' }}/>
-                <span style={{ position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)', fontSize: '0.75rem', color: 'var(--text-inverse)', opacity: isSearchUpdating ? 0.9 : 0, pointerEvents: 'none', transition: 'opacity 0.12s ease' }}>Searching...</span>
+                <input type="text" className="search-bar" placeholder="Search ID, Name, or Alarm..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} disabled={results.length === 0} style={{ outline: 'none', width: '100%', boxSizing: 'border-box', paddingRight: '92px', color: 'var(--text-inverse'}}/>
+                <span style={{ position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)', fontSize: '0.75rem', color: 'var(--text-inverse)', opacity: (isSearchUpdating || ((isInitialDataLoading || isLoading || isStoredDataLoading) && results.length > 0)) ? 0.9 : 0, pointerEvents: 'none', transition: 'opacity 0.12s ease' }}>
+                  {isSearchUpdating ? "Searching..." : "Syncing..."}
+                </span>
               </div>
             </div>
 
@@ -1199,63 +1704,129 @@ const headerActions = (
                   <div style={{ width: '8%', paddingRight: '15px', textAlign: 'center' }}>Count</div>
                 </div>
                 <div ref={listContainerRef} style={{ flex: 1, width: '100%', overflow: 'hidden', position: 'relative' }}>
-                  {results.length > 0 ? (
-                    <List height={mainListSize.height} itemCount={filteredResults.length} itemSize={70} width={mainListSize.width} overscanCount={10} className="custom-scrollbar">
-                      {VirtualizedRow}
-                    </List>
-                  ) : (
-                    <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', position: 'relative' }}>
-                      {[...Array(8)].map((_, i) => (
-                        <div key={i} style={{ display: 'flex', alignItems: 'center', padding: '0 20px', height: '70px', borderBottom: "1px solid rgba(128,128,128,0.05)", boxSizing: 'border-box', opacity: 0.6 }}>
-                          <div style={{ width: '12%', paddingRight: '15px' }}><div style={{ height: '12px', width: '60%', background: 'var(--border-color)', borderRadius: '4px' }}></div></div>
-                          <div style={{ width: '23%', paddingRight: '15px' }}><div style={{ height: '12px', width: '80%', background: 'var(--border-color)', borderRadius: '4px' }}></div></div>
-                          <div style={{ width: '20%', paddingRight: '15px' }}><div style={{ height: '12px', width: '70%', background: 'var(--border-color)', borderRadius: '4px' }}></div></div>
-                          <div style={{ width: '37%', paddingRight: '15px' }}><div style={{ height: '12px', width: '90%', background: 'var(--border-color)', borderRadius: '4px' }}></div></div>
-                          <div style={{ width: '8%', paddingRight: '15px', display: 'flex', justifyContent: 'center' }}><div style={{ height: '24px', width: '30px', background: 'var(--border-color)', borderRadius: '12px' }}></div></div>
+                  {(() => {
+                    // 1. Define states cleanly
+                    const isProcessing = isInitialDataLoading || isLoading || isStoredDataLoading;
+                    const isDatabaseSyncing = isInitialDataLoading || isStoredDataLoading || isRefreshingSavedData;
+                    const hasData = results && results.length > 0;
+                    const showOverlaySkeleton = isStoredDataLoading || isTableRevealActive;
+                    const isActiveLoading = isProcessing || isDatabaseSyncing;
+                    const emptyStateTitle = isDatabaseSyncing
+                      ? 'Searching database...'
+                      : isLoading
+                        ? 'Processing uploaded data...'
+                        : 'No Data Available';
+                    const emptyStateSubtitle = isDatabaseSyncing
+                      ? 'Importing data from the processed history.'
+                      : isLoading
+                        ? 'Preparing your latest processed results.'
+                        : 'Upload your masterlist to populate the table.';
+
+                    // STATE 1: DATA IS READY (Seamless background sync)
+                    if (hasData) {
+                      return (
+                        <div className={isTableRevealActive ? 'table-content-reveal' : ''} style={{ position: 'relative', width: '100%', height: '100%' }}>
+                          <List height={mainListSize.height} itemCount={filteredResults.length} itemSize={70} width={mainListSize.width} overscanCount={10} className="custom-scrollbar" onScroll={handleMainListScroll}>
+                            {VirtualizedRow}
+                          </List>
+                          {(showTableLoadingHint || isFullDataLoading) && (
+                            <div
+                              style={{
+                                position: 'absolute',
+                                right: 16,
+                                bottom: 16,
+                                zIndex: 30,
+                                background: isDarkMode ? 'rgba(17, 28, 68, 0.85)' : 'rgba(255, 255, 255, 0.92)',
+                                border: '1px solid var(--border-light)',
+                                borderRadius: '999px',
+                                padding: '6px 12px',
+                                fontSize: '0.75rem',
+                                color: 'var(--text-primary)',
+                                backdropFilter: 'blur(10px)',
+                                WebkitBackdropFilter: 'blur(10px)',
+                                pointerEvents: 'none'
+                              }}
+                            >
+                              Loading data...
+                            </div>
+                          )}
+                          {showOverlaySkeleton && (
+                            <div
+                              className={`table-skeleton-overlay ${isTableRevealActive && !isDatabaseSyncing ? 'fade-out' : ''}`}
+                              style={{
+                                position: 'absolute',
+                                inset: 0,
+                                zIndex: 20,
+                                background: isDarkMode ? 'rgba(17, 28, 68, 0.38)' : 'rgba(248, 250, 252, 0.75)',
+                                backdropFilter: 'blur(3px)',
+                                WebkitBackdropFilter: 'blur(3px)',
+                                pointerEvents: 'none'
+                              }}
+                            >
+                              {[...Array(8)].map((_, i) => (
+                                <div key={`sa-table-overlay-skeleton-${i}`} className="skeleton-row" style={{ display: 'flex', alignItems: 'center', padding: '0 20px', height: '70px', borderBottom: "1px solid rgba(128,128,128,0.05)", boxSizing: 'border-box' }}>
+                                  <div style={{ width: '12%', paddingRight: '15px' }}><div className="skeleton-bar" style={{ height: '12px', width: '60%', borderRadius: '4px' }}></div></div>
+                                  <div style={{ width: '23%', paddingRight: '15px' }}><div className="skeleton-bar" style={{ height: '12px', width: '80%', borderRadius: '4px' }}></div></div>
+                                  <div style={{ width: '20%', paddingRight: '15px' }}><div className="skeleton-bar" style={{ height: '12px', width: '70%', borderRadius: '4px' }}></div></div>
+                                  <div style={{ width: '37%', paddingRight: '15px' }}><div className="skeleton-bar" style={{ height: '12px', width: '90%', borderRadius: '4px' }}></div></div>
+                                  <div style={{ width: '8%', paddingRight: '15px', display: 'flex', justifyContent: 'center' }}><div className="skeleton-bar" style={{ height: '24px', width: '30px', borderRadius: '12px' }}></div></div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
-                      ))}
-                      <div
-                        style={{
-                          position: 'absolute',
-                          inset: 0,
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          background: isDarkMode
-                            ? 'linear-gradient(180deg, rgba(18, 22, 30, 0.32), rgba(18, 22, 30, 0.46))'
-                            : 'linear-gradient(180deg, rgba(255, 255, 255, 0.24), rgba(255, 255, 255, 0.42))',
-                          backdropFilter: 'blur(16px) saturate(150%)',
-                          WebkitBackdropFilter: 'blur(16px) saturate(150%)',
-                          borderTop: isDarkMode ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(255,255,255,0.55)',
-                          zIndex: 10
-                        }}
-                      >
+                      );
+                    }
+
+                    // STATE 2 & 3: LOADING OR EMPTY
+                    return (
+                      <div className={!isActiveLoading ? 'skeleton-idle' : ''} style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', position: 'relative' }}>
+                        
+                        {/* The Skeleton Rows */}
+                        {[...Array(8)].map((_, i) => (
+                          <div key={i} className="skeleton-row" style={{ display: 'flex', alignItems: 'center', padding: '0 20px', height: '70px', borderBottom: "1px solid rgba(128,128,128,0.05)", boxSizing: 'border-box' }}>
+                            <div style={{ width: '12%', paddingRight: '15px' }}><div className="skeleton-bar" style={{ height: '12px', width: '60%', borderRadius: '4px' }}></div></div>
+                            <div style={{ width: '23%', paddingRight: '15px' }}><div className="skeleton-bar" style={{ height: '12px', width: '80%', borderRadius: '4px' }}></div></div>
+                            <div style={{ width: '20%', paddingRight: '15px' }}><div className="skeleton-bar" style={{ height: '12px', width: '70%', borderRadius: '4px' }}></div></div>
+                            <div style={{ width: '37%', paddingRight: '15px' }}><div className="skeleton-bar" style={{ height: '12px', width: '90%', borderRadius: '4px' }}></div></div>
+                            <div style={{ width: '8%', paddingRight: '15px', display: 'flex', justifyContent: 'center' }}><div className="skeleton-bar" style={{ height: '24px', width: '30px', borderRadius: '12px' }}></div></div>
+                          </div>
+                        ))}
+
                         <div
                           style={{
-                            padding: '16px 32px',
-                            borderRadius: '30px',
-                            border: isDarkMode ? '1px solid rgba(255,255,255,0.18)' : '1px solid rgba(255,255,255,0.45)',
-                            background: isDarkMode ? 'rgba(25, 28, 36, 0.42)' : 'rgba(255, 255, 255, 0.5)',
-                            boxShadow: isDarkMode
-                              ? '0 18px 40px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.08)'
-                              : '0 18px 40px rgba(100, 84, 160, 0.16), inset 0 1px 0 rgba(255,255,255,0.7)',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '12px'
+                            position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            background: isDarkMode ? 'linear-gradient(180deg, rgba(18, 22, 30, 0.32), rgba(18, 22, 30, 0.46))' : 'linear-gradient(180deg, rgba(255, 255, 255, 0.24), rgba(255, 255, 255, 0.42))',
+                            backdropFilter: 'blur(16px) saturate(150%)', WebkitBackdropFilter: 'blur(16px) saturate(150%)',
+                            borderTop: isDarkMode ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(255,255,255,0.55)', zIndex: 10
                           }}
                         >
-                          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--brand-purple)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                            <polyline points="14 2 14 8 20 8"></polyline>
-                            <line x1="12" y1="18" x2="12" y2="12"></line>
-                            <line x1="9" y1="15" x2="15" y2="15"></line>
-                          </svg>
-                          <span style={{ color: 'var(--text-primary)', fontWeight: 'bold', fontSize: '1rem' }}>Upload Data to Populate Table</span>
+                          <div style={{ 
+                              background: 'var(--bg-card)', padding: '20px 40px', borderRadius: '12px', 
+                              boxShadow: '0 8px 32px rgba(0,0,0,0.2)', border: '1px solid var(--border-color)',
+                              display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '15px'
+                            }}>
+                              <img src={isDarkMode ? fileDark : fileLight} alt="No Data" style={{ width: '40px', opacity: 0.5 }} />
+                              <span style={{ color: 'var(--text-primary)', fontWeight: 'bold', fontSize: '1.1rem' }}>{emptyStateTitle}</span>
+                              <span style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>{emptyStateSubtitle}</span>
+                              {isDatabaseSyncing && (
+                                <div style={{ width: '100%', minWidth: '220px', marginTop: '2px' }}>
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                                    <span>Syncing...</span>
+                                    <span>{Math.round(databaseProgress)}%</span>
+                                  </div>
+                                  <div className="smart-progress-track">
+                                    <div className="smart-progress-fill" style={{ width: `${databaseProgress}%` }}></div>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
                         </div>
                       </div>
-                    </div>
-                  )}
+                    );
+                  })()}
                 </div>
+
               </div>
             </div>
           </div>
@@ -1350,11 +1921,11 @@ const headerActions = (
                 </div>
                 <div style={{ background: 'var(--bg-input)', padding: '20px', borderRadius: '12px', border: '1px solid var(--border-light)', boxShadow: isDarkMode ? '0 4px 12px rgba(0,0,0,0.4)' : '0 4px 12px rgba(0,0,0,0.05)' }}>
                   <div style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', fontWeight: 'bold', textTransform: 'uppercase' }}>Unique Alarm Types</div>
-                  <div style={{ fontSize: '2.2rem', fontWeight: 'bold', color: 'var(--brand-purple)', marginTop: '5px' }}>{alarmStats.length}</div>
+                  <div style={{ fontSize: '2.2rem', fontWeight: 'bold', color: 'var(--brand-purple)', marginTop: '5px' }}>{uniqueAlarmTypesCount}</div>
                 </div>
                 <div style={{ background: 'var(--bg-input)', padding: '20px', borderRadius: '12px', border: '1px solid var(--border-light)', borderTop: '4px solid var(--color-danger)', boxShadow: isDarkMode ? '0 4px 12px rgba(0,0,0,0.4)' : '0 4px 12px rgba(0,0,0,0.05)' }}>
                   <div style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', fontWeight: 'bold', textTransform: 'uppercase' }}>Most Critical Alarm</div>
-                  <div style={{ fontSize: '1rem', fontWeight: 'bold', color: 'var(--color-danger)', marginTop: '10px', wordBreak: 'break-word', lineHeight: '1.2' }}>{alarmStats[0]?.name || "N/A"}</div>
+                  <div style={{ fontSize: '1rem', fontWeight: 'bold', color: 'var(--color-danger)', marginTop: '10px', wordBreak: 'break-word', lineHeight: '1.2' }}>{mostCriticalAlarm}</div>
                 </div>
 
                 <div style={{ gridColumn: 'span 4', background: 'var(--bg-input)', padding: '20px', borderRadius: '12px', border: '1px solid var(--border-light)', display: 'flex', flexDirection: 'column', height: '320px', boxShadow: isDarkMode ? '0 4px 12px rgba(0,0,0,0.4)' : '0 4px 12px rgba(0,0,0,0.05)' }}>
@@ -1372,7 +1943,15 @@ const headerActions = (
                         style={{ cursor: 'pointer' }}
                       >
                         <CartesianGrid strokeDasharray="3 3" stroke="var(--border-light)" vertical={false} />
-                        <XAxis dataKey="name" stroke="var(--text-secondary)" tick={{fontSize: 10}} tickFormatter={(val) => val.length > 12 ? val.substring(0,12)+'...' : val} />
+                        <XAxis 
+                          dataKey="name" 
+                          stroke="var(--text-secondary)" 
+                          tick={{fontSize: 10, fill: isDarkMode ? '#8BA1B5' : 'var(--text-secondary)'}} 
+                          angle={-35} 
+                          textAnchor="end" 
+                          height={60} 
+                          tickFormatter={(val) => val.length > 20 ? val.substring(0,20)+'...' : val} 
+                        />
                         <YAxis stroke="var(--text-secondary)" tick={{fontSize: 12}} />
                         <RechartsTooltip cursor={{fill: isDarkMode ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)'}} content={<CustomGraphTooltip />} />
                         <Bar 
@@ -1435,10 +2014,29 @@ const headerActions = (
           </div>
         </div>
       )}
+      
+      {toast.visible && (
+        <div 
+          className={`glass-toast ${toast.isClosing ? 'slide-out' : 'slide-in'} ${toast.type}`}
+          onMouseEnter={handleToastMouseEnter}
+          onMouseLeave={handleToastMouseLeave}
+        >
+          <div className={`toast-icon-wrap ${toast.type}`}>
+            {toast.type === 'success' && <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>}
+            {toast.type === 'error' && <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>}
+            {(toast.type !== 'success' && toast.type !== 'error') && <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>}
+          </div>
+          <div className="toast-content">
+            <h4 className="toast-title">{toast.title}</h4>
+            <p className="toast-message">{toast.message}</p>
+          </div>
+          <button className="toast-close-btn" onClick={closeToast} aria-label="Close Notification">
+            &times;
+          </button>
+          <div className="toast-progress"></div>
+        </div>
+      )}
 
     </DashboardLayout>
   );
 }
-
-
-

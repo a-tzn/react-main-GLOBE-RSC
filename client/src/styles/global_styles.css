@@ -76,6 +76,31 @@ body.dark-mode .file-drop-area:hover {
   background: rgba(139, 92, 246, 0.1);
 }
 
+body.dark-mode {
+  /* 1. The Deepest Navy Background (Darker than your cards) */
+  --bg-app: #050d24; /* A step darker than #091a41 so cards pop out */
+  
+  /* 2. Your Chosen Color for the Main UI Surfaces */
+  --bg-sidebar: #091a41; 
+  --bg-primary: #091a41; 
+  --bg-secondary: #0c2154; /* Slightly lighter for inner cards/hover states */
+  
+  /* 3. The Glass Effect Restored (MUST use rgba for transparency) */
+  --bg-input: rgba(184, 164, 164, 0.05); 
+  
+  /* 4. Almost-invisible borders */
+  --border-color: rgba(255, 255, 255, 0.06);
+  --border-light: rgba(255, 255, 255, 0.06);
+  
+  /* 5. Typography contrast */
+  --text-primary: #E2E8F0; 
+  --text-secondary: #8BA1B5; 
+  
+  /* 6. The Brand Color (Needs to be brighter to act as a button/accent!) */
+  --brand-purple: #1a3999; /* A vibrant Globe-style blue that matches the navy */
+}
+
+
 .file-msg {
   font-size: 0.85rem;
   font-weight: 500;

@@ -1,13 +1,20 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import "./HP_styles.css";
 import globeLogo from "../../assets/Globe_LogoB.png";
 import { useNavigate } from "react-router-dom";
 import LoadingScreen from '../../components/LoadingScreen';
+import { getUserInfo } from '../../services/googleAppsScript';
 
 function HomePage() {
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    getUserInfo().catch(() => {
+      // best effort prefetch for faster user identity rendering on dashboards
+    });
+  }, []);
 
   const handleNavigate = (path) => {
     setIsLoading(true);

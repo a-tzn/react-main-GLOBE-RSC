@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { memo, useDeferredValue, useEffect, useMemo } from 'react';
 import { MapContainer, TileLayer, WMSTileLayer, Marker, Popup, Tooltip, useMap } from 'react-leaflet';
 import MarkerClusterGroup from 'react-leaflet-cluster';
 import 'leaflet/dist/leaflet.css';
@@ -15,6 +15,11 @@ L.Icon.Default.mergeOptions({
 
 // 🔥 CUSTOM MARKER ICON (with STATUS stored)
 const getCustomIcon = (status, isSelected, duplicateCount = 1) => {
+  const cacheKey = `${status || 'OTHER'}|${isSelected ? 1 : 0}`;
+  if (!isSelected && markerIconCache.has(cacheKey)) {
+    return markerIconCache.get(cacheKey);
+  }
+
   let bgColor = '#5e5e5d'; 
   if (status === 'NEW') bgColor = '#28a745'; 
   if (status === 'REMOVED') bgColor = '#dc3545'; 
@@ -25,7 +30,7 @@ const getCustomIcon = (status, isSelected, duplicateCount = 1) => {
   const ringSize = isSelected ? 3 : 2.5;
   const innerSize = Math.max(size - (ringSize * 2), 8);
 
-  return L.divIcon({
+  const icon = L.divIcon({
     className: 'custom-marker',
 
     // 👇 IMPORTANT: store status here
@@ -63,7 +68,15 @@ const getCustomIcon = (status, isSelected, duplicateCount = 1) => {
     iconSize: [size, size],
     iconAnchor: [anchor, anchor]
   });
+
+  if (!isSelected) {
+    markerIconCache.set(cacheKey, icon);
+  }
+
+  return icon;
 };
+
+const markerIconCache = new Map();
 
 // 🔥 FINAL CLUSTER ICON (pulse + status ring)
 const createCustomClusterIcon = (cluster) => {
@@ -217,16 +230,18 @@ const createCustomClusterIcon = (cluster) => {
 };
 
 // 🔁 Map recenter logic (unchanged)
-function MapRecenter({ expanded, filteredResults = [], selectedSite = {} }) {
+function MapRecenter({ expanded, processedData = [], selectedSite = {} }) {
   const map = useMap();
 
   const bounds = useMemo(() => {
     const pts = [];
-    filteredResults.forEach(site => {
-      if (site.lat && site.lng) pts.push([parseFloat(site.lat), parseFloat(site.lng)]);
+    processedData.forEach((site) => {
+      if (Number.isFinite(site.latNum) && Number.isFinite(site.lngNum)) {
+        pts.push([site.latNum, site.lngNum]);
+      }
     });
     return pts.length ? L.latLngBounds(pts) : null;
-  }, [filteredResults]);
+  }, [processedData]);
 
   useEffect(() => {
     map.invalidateSize();
@@ -241,15 +256,16 @@ function MapRecenter({ expanded, filteredResults = [], selectedSite = {} }) {
 }
 
 // 🔥 MAIN COMPONENT
-export default function MapVisualizer({ selectedSite = {}, filteredResults = [], isExpanded = false }) {
+function MapVisualizer({ selectedSite = {}, filteredResults = [], isExpanded = false }) {
+  const deferredFilteredResults = useDeferredValue(filteredResults);
 
   const processedData = useMemo(() => {
     const idMap = {};
-    filteredResults.forEach(s => {
+    deferredFilteredResults.forEach(s => {
       if (s.plaId) idMap[s.plaId] = (idMap[s.plaId] || 0) + 1;
     });
 
-    return filteredResults
+    return deferredFilteredResults
       .filter(s => s.lat && s.lng)
       .map((s, idx) => ({
         ...s,
@@ -258,7 +274,7 @@ export default function MapVisualizer({ selectedSite = {}, filteredResults = [],
         lngNum: parseFloat(s.lng),
         dupCount: idMap[s.plaId] || 1
       }));
-  }, [filteredResults]);
+  }, [deferredFilteredResults]);
 
   const [centreLat, centreLng] = useMemo(() => {
     if (selectedSite.lat && selectedSite.lng) return [parseFloat(selectedSite.lat), parseFloat(selectedSite.lng)];
@@ -278,7 +294,7 @@ export default function MapVisualizer({ selectedSite = {}, filteredResults = [],
 
       <MapRecenter
         expanded={isExpanded}
-        filteredResults={filteredResults}
+        processedData={processedData}
         selectedSite={selectedSite}
       />
 
@@ -292,6 +308,8 @@ export default function MapVisualizer({ selectedSite = {}, filteredResults = [],
 
       <MarkerClusterGroup
         chunkedLoading
+        chunkInterval={80}
+        chunkDelay={16}
         maxClusterRadius={60}
         iconCreateFunction={createCustomClusterIcon}
         disableClusteringAtZoom={16}
@@ -332,3 +350,5 @@ export default function MapVisualizer({ selectedSite = {}, filteredResults = [],
     </MapContainer>
   );
 }
+
+export default memo(MapVisualizer);
