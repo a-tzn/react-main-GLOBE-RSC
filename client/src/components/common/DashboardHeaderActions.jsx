@@ -46,13 +46,10 @@ export function DashboardHeaderActions({
             alignItems: 'center',
             gap: '8px',
             padding: '6px 10px',
-            borderRadius: '999px',
-            background: 'var(--bg-input)',
-            border: '1px solid var(--border-light)',
             color: 'var(--text-secondary)',
             fontSize: '0.75rem',
             minWidth: '88px',
-            justifyContent: 'center'
+            justifyContent: 'right'
           }}
         >
           <span

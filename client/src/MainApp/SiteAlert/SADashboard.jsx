@@ -235,6 +235,14 @@ export default function SADashboard() {
     }
   };
 
+  const toPreviewRows = (rows) => {
+    const safeRows = Array.isArray(rows) ? rows : [];
+    return safeRows.map((row) => ({
+      ...row,
+      rawRows: []
+    }));
+  };
+
   const showTransientTableLoadingHint = () => {
     setShowTableLoadingHint(true);
     if (tableLoadingHintTimerRef.current) clearTimeout(tableLoadingHintTimerRef.current);
@@ -344,17 +352,8 @@ useEffect(() => {
           setPersistedSummaryStats(cachedMeta.persistedSummaryStats || null);
 
           if (Array.isArray(cachedMeta.latestPreviewData) && cachedMeta.latestPreviewData.length > 0) {
-            setResults(cachedMeta.latestPreviewData);
+            setResults(toPreviewRows(cachedMeta.latestPreviewData));
           }
-
-          localforage.getItem(cacheDataKey).then((cachedData) => {
-            const sameSnapshot = cachedData?.timestamp && cachedMeta?.timestamp && cachedData.timestamp === cachedMeta.timestamp;
-            if (isMounted && sameSnapshot && cachedData?.latestStoredData) {
-              applyStoredProcessedData(cachedData.latestStoredData);
-            }
-          }).catch((err) => {
-            console.warn('IndexedDB Full Cache Read Failed', err);
-          });
 
           setIsInitialDataLoading(false);
         } else if (cachedMeta && !isFresh) {
@@ -392,7 +391,7 @@ useEffect(() => {
         setIsFullDataLoaded(false);
 
         if (!hasFreshCache && previewData.length > 0) {
-          setResults(previewData);
+          setResults(toPreviewRows(previewData));
           setPersistedSummaryStats(summaryStats);
           setIsInitialDataLoading(false);
         } else if (!hasFreshCache) {
@@ -410,7 +409,7 @@ useEffect(() => {
           nextUserInfo: userData || getCachedUserInfo() || null,
           nextStoredData: storedDataList,
           nextLastModifiedInfo: lastModified,
-          latestPreviewData: previewData,
+          latestPreviewData: toPreviewRows(previewData),
           nextSummaryStats: summaryStats
         });
       } catch (error) {
@@ -702,7 +701,7 @@ useEffect(() => {
                 fileName: fileNames,
                 metadata: { summaryStats }
               },
-              latestPreviewData: safeProcessedData,
+              latestPreviewData: toPreviewRows(safeProcessedData),
               nextSummaryStats: summaryStats
             }).catch((err) => console.warn('IndexedDB Write Failed', err));
           })
@@ -894,7 +893,7 @@ useEffect(() => {
       setLatestStoredDataId(latestSummary?.id || null);
       setExpectedResultCount(Number.isFinite(refreshedProcessedCount) ? refreshedProcessedCount : refreshedPreview.length);
       if (refreshedPreview.length > 0) {
-        setResults(refreshedPreview);
+        setResults(toPreviewRows(refreshedPreview));
         setIsFullDataLoaded(false);
       }
       setLastModifiedInfo(lastModified);
@@ -1009,8 +1008,10 @@ useEffect(() => {
 
   const isSearchUpdating = isSearchPending || deferredSearchTerm !== debouncedTerm || isWorkerBusy;
 
-  const handleMainListScroll = ({ scrollOffset, scrollUpdateWasRequested }) => {
+  const handleMainListScroll = ({ scrollDirection, scrollOffset, scrollUpdateWasRequested }) => {
     if (scrollUpdateWasRequested) return;
+    if (scrollDirection !== 'forward') return;
+    if (scrollOffset <= 0) return;
     if (isFullDataLoaded || isFullDataLoading) return;
     if (!latestStoredDataId) return;
     if (expectedResultCount <= results.length) return;
@@ -1018,6 +1019,7 @@ useEffect(() => {
     const rowHeight = 70;
     const visibleHeight = Number(mainListSize.height) || 0;
     const estimatedTotalHeight = filteredResults.length * rowHeight;
+    if (estimatedTotalHeight <= visibleHeight + rowHeight) return;
     const nearBottom = scrollOffset + visibleHeight >= Math.max(0, estimatedTotalHeight - rowHeight * 2);
 
     if (nearBottom) {
@@ -1647,7 +1649,7 @@ const headerActions = (
                   </button>
                   <img src={warningDark} alt="Alerts" style={{ width: '24px' }} />
                   <h2 style={{ margin: 0, fontSize: '1.2rem', color: 'var(--text-inverse)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {dashboardMode === 'wireless' ? 'Wireless Critical Alerts' : 'Transport Critical Alerts'} ({filteredResults.length})
+                    {dashboardMode === 'wireless' ? 'Wireless Critical Alerts' : 'Transport Critical Alerts'} ({Math.max(expectedResultCount, results.length)})
                   </h2>
                   
                   {loadedDataSource && results.length > 0 && (
