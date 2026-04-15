@@ -20,8 +20,8 @@ import fileDark from '../../assets/fileDark.png';
 import fileLight from '../../assets/fileLight.png';
 import warningDark from '../../assets/warningDark.png';
 
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, Cell, Rectangle } from 'recharts';
-import { FixedSizeList as List, VariableSizeList } from 'react-window'; // ?? THE CRASH FIX IMPORT!
+import { ComposedChart, BarChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, Cell, Rectangle } from 'recharts';
+import { FixedSizeList as List, VariableSizeList } from 'react-window';
 
 import * as XLSX from 'xlsx';
 import { useNavigate } from "react-router-dom";
@@ -30,6 +30,68 @@ import DashboardLayout from '../../components/DashboardLayout';
 import DashboardHeaderActions from '../../components/common/DashboardHeaderActions';
 import { ThemedButton, ThemedBadge } from '../../components/common';
 import '../../styles/Dashboard_styles.css';
+
+function getRowValueCaseInsensitive(row, keys = []) {
+  if (!row || typeof row !== 'object') return null;
+  const entries = Object.entries(row);
+  const upperKeys = keys.map((k) => String(k).toUpperCase());
+  for (let i = 0; i < entries.length; i++) {
+    const [k, v] = entries[i];
+    if (upperKeys.includes(String(k).toUpperCase())) return v;
+  }
+  return null;
+}
+
+function parseDateValue(input) {
+  if (input === null || input === undefined || input === '') return null;
+  if (input instanceof Date && !Number.isNaN(input.getTime())) return input;
+
+  if (typeof input === 'number' && Number.isFinite(input) && input > 30000) {
+    const dt = new Date(Math.round((input - 25569) * 86400 * 1000));
+    return Number.isNaN(dt.getTime()) ? null : dt;
+  }
+
+  const raw = String(input).trim();
+  if (!raw) return null;
+
+  let dt = new Date(raw);
+  if (!Number.isNaN(dt.getTime())) return dt;
+
+  dt = new Date(raw.replace(' ', 'T'));
+  if (!Number.isNaN(dt.getTime())) return dt;
+
+  return null;
+}
+
+function parseDurationSeconds(value) {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value === 'number' && Number.isFinite(value)) return value >= 0 ? value : null;
+
+  const text = String(value).toLowerCase();
+  const h = Number((text.match(/(\d+)\s*hour/) || [])[1] || 0);
+  const m = Number((text.match(/(\d+)\s*minute/) || [])[1] || 0);
+  const s = Number((text.match(/(\d+)\s*second/) || [])[1] || 0);
+  const total = (h * 3600) + (m * 60) + s;
+  return total > 0 ? total : null;
+}
+
+function formatMinutesCompact(minutes) {
+  if (!Number.isFinite(minutes) || minutes <= 0) return 'N/A';
+  const rounded = Math.round(minutes);
+  const h = Math.floor(rounded / 60);
+  const m = rounded % 60;
+  if (h <= 0) return `${m}m`;
+  return `${h}h ${m}m`;
+}
+
+function buildAxisTicks(maxValue, step) {
+  const safeStep = Math.max(1, Number(step) || 1);
+  const safeMax = Math.max(0, Number(maxValue) || 0);
+  const top = safeMax <= 0 ? safeStep : Math.ceil(safeMax / safeStep) * safeStep;
+  const ticks = [];
+  for (let v = 0; v <= top; v += safeStep) ticks.push(v);
+  return ticks.length ? ticks : [0, safeStep];
+}
 
 export default function SADashboard() {
   const [monitorFile1, setMonitorFile1] = useState(null); 
@@ -147,6 +209,7 @@ export default function SADashboard() {
   const [isFullDataLoaded, setIsFullDataLoaded] = useState(false);
   const [showTableLoadingHint, setShowTableLoadingHint] = useState(false);
   const tableLoadingHintTimerRef = useRef(null);
+  const autoFullLoadAttemptRef = useRef('');
 
   // Backend integration state
   const [storedData, setStoredData] = useState([]);
@@ -282,6 +345,42 @@ export default function SADashboard() {
   };
 
   useEffect(() => {
+    const hasPreviewOnlyData = results.length > 0 && expectedResultCount > results.length;
+    if (!hasPreviewOnlyData) return;
+    if (!latestStoredDataId || isFullDataLoaded || isFullDataLoading) return;
+    if (isInitialDataLoading || isRefreshingSavedData || isStoredDataLoading || isLoading) return;
+
+    const attemptKey = `${dashboardMode}:${latestStoredDataId}:${expectedResultCount}`;
+    if (autoFullLoadAttemptRef.current === attemptKey) return;
+    autoFullLoadAttemptRef.current = attemptKey;
+
+    let cancelled = false;
+    (async () => {
+      const fullRows = await ensureLatestFullDataLoaded('auto');
+      if (cancelled) return;
+      if (!Array.isArray(fullRows) || fullRows.length === 0) {
+        // Allow retry if background fetch failed/interrupted.
+        autoFullLoadAttemptRef.current = '';
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    dashboardMode,
+    latestStoredDataId,
+    expectedResultCount,
+    results.length,
+    isFullDataLoaded,
+    isFullDataLoading,
+    isInitialDataLoading,
+    isRefreshingSavedData,
+    isStoredDataLoading,
+    isLoading
+  ]);
+
+  useEffect(() => {
     const handleResize = () => setModalListHeight((window.innerHeight * 0.9) - 190);
     handleResize(); 
     window.addEventListener('resize', handleResize);
@@ -308,7 +407,8 @@ useEffect(() => {
       document.querySelector('.search-bar')?.focus();
     }
     if (e.key === 'Escape') {
-      setShowBigMap(false);
+      setIsGraphModalVisible(false);
+      setIsDrillDownVisible(false);
     }
   };
   window.addEventListener('keydown', handleKeyDown);
@@ -650,6 +750,7 @@ useEffect(() => {
       const rawDataArray = Array.isArray(result?.data) ? result.data : [];
       const safeProcessedData = rawDataArray.map((item) => ({
         alert: item.alert || item.alarm || "N/A",
+        sourceType: item.sourceType || "Unknown Source Type",
         dn: item.dn || item.li || item.locationInfo || "N/A",
         name: item.name || item.sn || item.siteName || "N/A",
         pla: item.pla || item.severity || item.plaId || "N/A",
@@ -686,24 +787,29 @@ useEffect(() => {
           }
         )
           .then(async () => {
-            const [updatedStoredData, lastModified] = await Promise.all([
-              getUserUploadedDataSummary(10, dashboardMode, true),
-              getLastModifiedInfo(dashboardMode)
-            ]);
-            setStoredData(updatedStoredData);
-            setLastModifiedInfo(lastModified);
-            saveDashboardCache({
-              nextUserInfo: userInfo || getCachedUserInfo() || null,
-              nextStoredData: updatedStoredData,
-              nextLastModifiedInfo: lastModified,
-              latestStoredData: {
-                processedData: safeProcessedData,
-                fileName: fileNames,
-                metadata: { summaryStats }
-              },
-              latestPreviewData: toPreviewRows(safeProcessedData),
-              nextSummaryStats: summaryStats
-            }).catch((err) => console.warn('IndexedDB Write Failed', err));
+            try {
+              const [updatedStoredData, lastModified] = await Promise.all([
+                getUserUploadedDataSummary(10, dashboardMode, true),
+                getLastModifiedInfo(dashboardMode)
+              ]);
+              setStoredData(updatedStoredData);
+              setLastModifiedInfo(lastModified);
+              saveDashboardCache({
+                nextUserInfo: userInfo || getCachedUserInfo() || null,
+                nextStoredData: updatedStoredData,
+                nextLastModifiedInfo: lastModified,
+                latestStoredData: {
+                  processedData: safeProcessedData,
+                  fileName: fileNames,
+                  metadata: { summaryStats }
+                },
+                latestPreviewData: toPreviewRows(safeProcessedData),
+                nextSummaryStats: summaryStats
+              }).catch((err) => console.warn('IndexedDB Write Failed', err));
+            } catch (refreshError) {
+              // Save already succeeded; this is only a post-save refresh failure.
+              console.warn('Saved successfully but failed to refresh dashboard history:', refreshError);
+            }
           })
           .catch((storeError) => {
             console.error('Failed to store data:', storeError);
@@ -847,7 +953,7 @@ useEffect(() => {
 
   const renderHistoryLoadingSkeleton = () => (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-      <div style={{ background: 'var(--bg-primary)', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-light)' }}>
+      <div style={{ background: 'var(--bg-primary)', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-light)', position: 'sticky', top: 0, zIndex: 1 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
           <span>Loading data from history...</span>
           <span>{Math.round(historyLoadProgress)}%</span>
@@ -952,6 +1058,97 @@ useEffect(() => {
     }
     return [...results].sort((a,b) => b.count - a.count).slice(0, 50); 
   }, [results, selectedGraphAlarm]);
+
+  const timeAnalytics = useMemo(() => {
+    const hourlyBuckets = Array.from({ length: 24 }, (_, h) => ({
+      hour: `${String(h).padStart(2, '0')}:00`,
+      count: 0
+    }));
+
+    let observedRows = 0;
+    let timedRows = 0;
+    let mttaTotalMin = 0;
+    let mttaCount = 0;
+    let mttrTotalMin = 0;
+    let mttrCount = 0;
+    let durationTotalSec = 0;
+    let durationCount = 0;
+
+    results.forEach((group) => {
+      const rows = Array.isArray(group?.rawRows) ? group.rawRows : [];
+      rows.forEach((rawRow) => {
+        observedRows += 1;
+
+        const eventTimeValue = dashboardMode === 'wireless'
+          ? getRowValueCaseInsensitive(rawRow, ['ALARM TIME', 'ALARM DATE', 'TIME'])
+          : getRowValueCaseInsensitive(rawRow, ['LAST OCCURED (ST)', 'LAST OCCURRED (ST)', 'LAST OCCURED', 'LAST OCCURRED']);
+
+        const eventDate = parseDateValue(eventTimeValue);
+        if (eventDate) {
+          const hour = eventDate.getHours();
+          if (hour >= 0 && hour <= 23) {
+            hourlyBuckets[hour].count += 1;
+            timedRows += 1;
+          }
+        }
+
+        if (dashboardMode === 'transport') {
+          const lastOccurred = parseDateValue(
+            getRowValueCaseInsensitive(rawRow, ['LAST OCCURED (ST)', 'LAST OCCURRED (ST)', 'LAST OCCURED', 'LAST OCCURRED'])
+          );
+          const acknowledged = parseDateValue(
+            getRowValueCaseInsensitive(rawRow, ['ACKNOWLEDGED ON (ST)', 'ACKNOWLEDGED ON'])
+          );
+          const cleared = parseDateValue(
+            getRowValueCaseInsensitive(rawRow, ['CLEARED ON (ST)', 'CLEARED ON'])
+          );
+          const durationSec = parseDurationSeconds(
+            getRowValueCaseInsensitive(rawRow, ['DURATION'])
+          );
+
+          if (lastOccurred && acknowledged) {
+            const deltaMin = (acknowledged.getTime() - lastOccurred.getTime()) / 60000;
+            if (Number.isFinite(deltaMin) && deltaMin >= 0) {
+              mttaTotalMin += deltaMin;
+              mttaCount += 1;
+            }
+          }
+
+          if (lastOccurred && cleared) {
+            const deltaMin = (cleared.getTime() - lastOccurred.getTime()) / 60000;
+            if (Number.isFinite(deltaMin) && deltaMin >= 0) {
+              mttrTotalMin += deltaMin;
+              mttrCount += 1;
+            }
+          }
+
+          if (durationSec !== null) {
+            durationTotalSec += durationSec;
+            durationCount += 1;
+          }
+        }
+      });
+    });
+
+    return {
+      hourlyData: hourlyBuckets,
+      observedRows,
+      timedRows,
+      mttaAvgMin: mttaCount ? (mttaTotalMin / mttaCount) : null,
+      mttrAvgMin: mttrCount ? (mttrTotalMin / mttrCount) : null,
+      avgDurationMin: durationCount ? ((durationTotalSec / durationCount) / 60) : null
+    };
+  }, [results, dashboardMode]);
+
+  const trendYAxisTicks = useMemo(() => {
+    const maxCount = Math.max(0, ...timeAnalytics.hourlyData.map((d) => Number(d.count) || 0));
+    return buildAxisTicks(maxCount, 100);
+  }, [timeAnalytics.hourlyData]);
+
+  const alarmFrequencyYAxisTicks = useMemo(() => {
+    const maxCount = Math.max(0, ...alarmStats.map((d) => Number(d.count) || 0));
+    return buildAxisTicks(maxCount, 300);
+  }, [alarmStats]);
 
   const deferredSearchTerm = useDeferredValue(debouncedTerm);
 
@@ -1141,6 +1338,16 @@ useEffect(() => {
         const VirtualizedModalRow = ({ index, style }) => {
           const raw = filteredModalRows[index];
           const validEntries = getValidEntries(raw);
+          const findEntryValue = (keys = []) => {
+            const normalized = keys.map((k) => String(k).toUpperCase());
+            const found = validEntries.find(([k]) => normalized.includes(String(k).toUpperCase()));
+            return found?.[1] || null;
+          };
+          const heroAlarmText =
+            findEntryValue(['ALARM TEXT', 'ALARM NAME', 'NAME']) ||
+            findEntryValue(['ALARM SOURCE TYPE']) ||
+            'UNKNOWN ALARM';
+          const heroAlarmUpper = String(heroAlarmText).toUpperCase();
 
           return (
   <div style={{ ...style, padding: '0 5px 20px 5px', boxSizing: 'border-box' }}>
@@ -1171,8 +1378,7 @@ useEffect(() => {
             Occurrence #{index + 1}
           </div>
           <div style={{ color: 'var(--text-primary)', fontSize: '1.25rem', fontWeight: 'bold', letterSpacing: '0.5px' }}>
-            {/* Automatically find and feature the Alarm Text */}
-            {validEntries.find(([k]) => k.toUpperCase() === 'ALARM TEXT')?.[1] || 'UNKNOWN ALARM'}
+            {heroAlarmText}
           </div>
         </div>
         
@@ -1222,7 +1428,12 @@ useEffect(() => {
           const upperKey = key.toUpperCase();
           
           // Skip the keys we already featured in the Hero Banner so we don't duplicate them
-          if (upperKey === 'ALARM TEXT' || upperKey === 'SEVERITY') return null;
+          if (
+            upperKey === 'SEVERITY' ||
+            (heroAlarmUpper !== 'UNKNOWN ALARM' &&
+              (upperKey === 'ALARM TEXT' || upperKey === 'ALARM NAME' || upperKey === 'NAME' || upperKey === 'ALARM SOURCE TYPE') &&
+              String(value).toUpperCase() === heroAlarmUpper)
+          ) return null;
 
           const isTimeCol = key.toLowerCase().includes('time') || key.toLowerCase().includes('date') || key.toLowerCase().includes('stamp');
           let displayShort = String(value);
@@ -1338,6 +1549,7 @@ const headerActions = (
         .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(15, 23, 42, 0.38); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
         .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(15, 23, 42, 0.52); border: 2px solid transparent; background-clip: padding-box; }
         .custom-scrollbar { scrollbar-width: thin; scrollbar-color: rgba(15, 23, 42, 0.38) rgba(15, 23, 42, 0.08); scrollbar-gutter: stable both-edges; }
+        .sa-table-scroll { scrollbar-gutter: stable !important; }
         body.dark-mode .custom-scrollbar::-webkit-scrollbar-track { background: rgba(255, 255, 255, 0.08); }
         body.dark-mode .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.28); border: 2px solid transparent; background-clip: padding-box; }
         body.dark-mode .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.42); border: 2px solid transparent; background-clip: padding-box; }
@@ -1358,7 +1570,6 @@ const headerActions = (
         }
         @keyframes skeleton-shimmer { 100% { transform: translateX(100%); } }
         
-        /* 🚀 PREMIUM GLASS TOAST */
         .glass-toast { position: fixed; top: 24px; right: 24px; z-index: 10000; background: linear-gradient(135deg, rgba(255, 255, 255, 0.6) 0%, rgba(255, 255, 255, 0.25) 100%); backdrop-filter: blur(32px) saturate(200%); -webkit-backdrop-filter: blur(32px) saturate(200%); border: 1px solid rgba(255, 255, 255, 0.7); box-shadow: inset 1px 1px 2px rgba(255, 255, 255, 0.9), 0 20px 40px rgba(31, 38, 135, 0.15), 0 5px 15px rgba(0, 0, 0, 0.08); border-radius: 16px; padding: 16px 20px; min-width: 320px; max-width: 400px; display: flex; align-items: flex-start; gap: 16px; color: var(--text-primary); overflow: hidden; }
         .glass-toast.success { border-left: 4px solid #0db15c; }
         .glass-toast.error { border-left: 4px solid #f02849; }
@@ -1497,10 +1708,91 @@ const headerActions = (
                       </div>
                     </div>
                   ) : alarmStats.length > 0 ? (
+
                     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+                     <div style={{ 
+                        display: 'flex', 
+                        justifyContent: 'space-between', 
+                        alignItems: 'center', 
+                        marginBottom: '15px' 
+                      }}>
+                        <h4 style={{ margin: 0 }}>
+                          Time Trends ({dashboardMode === 'wireless' ? 'Wireless' : 'Transport'})
+                        </h4>
+
+                        <div 
+                          className="skeleton-bar" 
+                          onClick={openGraphModal}
+                          style={{ 
+                            width: '60px', 
+                            height: '24px', 
+                            borderRadius: '4px', 
+                            background: 'var(--bg-input)', 
+                            border: '1px solid var(--border-color)', 
+                            color: 'var(--color-info)', 
+                            fontSize: '0.75rem', 
+                            fontWeight: 'bold', 
+                            cursor: 'pointer', 
+                            display: 'flex', 
+                            alignItems: 'center', 
+                            justifyContent: 'center' 
+                          }}
+                        >
+                          Expand
+                        </div>
+                      </div>
+
+
+                      <div style={{ marginBottom: '14px', background: 'var(--bg-primary)', border: '1px solid var(--border-light)', borderRadius: '10px', padding: '10px'}}>
+                        <div style={{ fontSize: '0.9rem', fontWeight: 'bold', color: 'var(--text-primary)', marginBottom: '8px'}}>
+                        </div>
+                        <div style={{ width: '100%', height: '150px' }}>
+                          <ResponsiveContainer width="100%" height="100%">
+                            <ComposedChart data={timeAnalytics.hourlyData} margin={{ top: 10, right: 5, left: -30, bottom: 0 }}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="var(--border-light)" />
+                              <XAxis dataKey="hour" tick={{ fontSize: 10, fill: 'var(--text-secondary)' }} interval={3} />
+                              <YAxis
+                                allowDecimals={false}
+                                tick={{ fontSize: 10, fill: 'var(--text-secondary)' }}
+                                ticks={trendYAxisTicks}
+                                domain={[0, trendYAxisTicks[trendYAxisTicks.length - 1]]}
+                              />
+                              <RechartsTooltip />
+                              <Bar dataKey="count" fill="var(--brand-purple)" fillOpacity={0.5} radius={[4, 4, 0, 0]} />
+                              <Line
+                                type="monotone"
+                                dataKey="count"
+                                stroke={isDarkMode ? '#9b7bff' : '#5b21b6'}
+                                strokeWidth={2.2}
+                                dot={{ r: 2.8, fill: isDarkMode ? '#d6ccff' : '#5b21b6', strokeWidth: 0 }}
+                                activeDot={{ r: 4 }}
+                              />
+                            </ComposedChart>
+                          </ResponsiveContainer>
+                        </div>
+                        
+                        <div style={{ display: 'grid', gridTemplateColumns: dashboardMode === 'transport' ? '1fr 1fr' : '1fr', gap: '8px', marginTop: '8px' }}>
+                          <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                            Timed Rows: <span style={{ color: 'var(--text-primary)', fontWeight: 'bold' }}>{timeAnalytics.timedRows}/{timeAnalytics.observedRows}</span>
+                          </div>
+                          {dashboardMode === 'transport' && (
+                            <>
+                              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                                MTTA: <span style={{ color: 'var(--text-primary)', fontWeight: 'bold' }}>{formatMinutesCompact(timeAnalytics.mttaAvgMin)}</span>
+                              </div>
+                              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                                MTTR: <span style={{ color: 'var(--text-primary)', fontWeight: 'bold' }}>{formatMinutesCompact(timeAnalytics.mttrAvgMin)}</span>
+                              </div>
+                              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                                Avg Duration: <span style={{ color: 'var(--text-primary)', fontWeight: 'bold' }}>{formatMinutesCompact(timeAnalytics.avgDurationMin)}</span>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      </div>
+
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
                         <h3 style={{ margin: 0, fontSize: '1.1rem', color: 'var(--text-primary)' }}>Top Alarms</h3>
-                        <button ref={expandBtnRef} onClick={openGraphModal} style={{ background: 'var(--bg-input)', border: '1px solid var(--border-color)', color: 'var(--color-info)', fontSize: '0.75rem', fontWeight: 'bold', cursor: 'pointer', padding: '5px 10px', borderRadius: '4px', outline: 'none' }}>Expand</button>
                       </div>
                       <div className="custom-scrollbar" style={{ display: 'flex', flexDirection: 'column', gap: '12px', overflowY: 'auto', overflowX: 'hidden', paddingRight: '5px' }}>
                         {alarmStats.map((stat, i) => ( 
@@ -1597,7 +1889,7 @@ const headerActions = (
                       renderHistoryLoadingSkeleton()
                     ) : storedData.length > 0 ? (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                        {storedData.map((item, index) => (
+                        {storedData.map((item) => (
                           <div key={item.id} style={{ background: 'var(--bg-primary)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-light)', cursor: 'pointer', transition: 'all 0.2s' }} onClick={() => handleLoadStoredData(item)} className="row-hover">
                             
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '4px' }}>
@@ -1689,7 +1981,7 @@ const headerActions = (
                   )}
                </div>
               <div style={{ position: 'relative', flex: '1 1 240px', minWidth: 0, maxWidth: '320px', width: '100%' }}>
-                <input type="text" className="search-bar" placeholder="Search ID, Name, or Alarm..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} disabled={results.length === 0} style={{ outline: 'none', width: '100%', boxSizing: 'border-box', paddingRight: '92px', color: 'var(--text-inverse'}}/>
+                <input type="text" className="search-bar" placeholder="Search ID, Name, or Alarm..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} disabled={results.length === 0} style={{ outline: 'none', width: '100%', boxSizing: 'border-box', paddingRight: '92px', color: 'var(--text-inverse)' }}/>
                 <span style={{ position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)', fontSize: '0.75rem', color: 'var(--text-inverse)', opacity: (isSearchUpdating || ((isInitialDataLoading || isLoading || isStoredDataLoading) && results.length > 0)) ? 0.9 : 0, pointerEvents: 'none', transition: 'opacity 0.12s ease' }}>
                   {isSearchUpdating ? "Searching..." : "Syncing..."}
                 </span>
@@ -1728,7 +2020,7 @@ const headerActions = (
                     if (hasData) {
                       return (
                         <div className={isTableRevealActive ? 'table-content-reveal' : ''} style={{ position: 'relative', width: '100%', height: '100%' }}>
-                          <List height={mainListSize.height} itemCount={filteredResults.length} itemSize={70} width={mainListSize.width} overscanCount={10} className="custom-scrollbar" onScroll={handleMainListScroll}>
+                          <List height={mainListSize.height} itemCount={filteredResults.length} itemSize={70} width={mainListSize.width} overscanCount={10} className="custom-scrollbar sa-table-scroll" onScroll={handleMainListScroll}>
                             {VirtualizedRow}
                           </List>
                           {(showTableLoadingHint || isFullDataLoading) && (
@@ -1875,7 +2167,17 @@ const headerActions = (
             <div className="map-modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'var(--brand-gradient)', color: 'white', padding: '20px 30px' }}>
               <div>
                 <h3 style={{ margin: 0, fontSize: '1.4rem', color: 'white' }}>{drillDownData.name} ({drillDownData.pla})</h3>
-                <p style={{ margin: '5px 0 0 0', opacity: 0.9, fontSize: '0.9rem' }}>{drillDownData.alert}</p>
+                <p style={{ margin: '5px 0 0 0', opacity: 0.9, fontSize: '0.9rem' }}>
+                  {dashboardMode === 'transport'
+                    ? `Source Type: ${
+                        drillDownData.sourceType ||
+                        drillDownData.rawRows?.[0]?.['ALARM SOURCE TYPE'] ||
+                        drillDownData.rawRows?.[0]?.['Alarm Source Type'] ||
+                        drillDownData.rawRows?.[0]?.['SOURCE TYPE'] ||
+                        'Unknown Source Type'
+                      }`
+                    : drillDownData.alert}
+                </p>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
                 <div style={{ background: 'white', color: isDarkMode ? 'var(--color-danger)' : 'var(--color-danger)', padding: '5px 15px', borderRadius: '20px', fontWeight: 'bold' }}>{filteredModalRows.length} Occurrences</div>
@@ -1904,30 +2206,75 @@ const headerActions = (
       {/* THE ENTERPRISE ANALYTICS MODAL */}
       {isGraphModalRendered && (
         <div className="map-modal-overlay" onClick={closeGraphModal} style={{ opacity: isGraphModalVisible ? 1 : 0, transition: 'opacity 0.3s ease', zIndex: 999 }}>
-          <div className="map-modal-content" onClick={e => e.stopPropagation()} style={{ width: '80%', height: '85%', display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', borderRadius: '16px', overflow: 'hidden', transformOrigin: graphModalOrigin, transform: isGraphModalVisible ? 'scale(1) translateY(0)' : 'scale(0.05) translateY(50px)', opacity: isGraphModalVisible ? 1 : 0, transition: 'transform 0.35s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.3s ease', boxShadow: isGraphModalVisible ? (isDarkMode ? '0 25px 50px -12px rgba(0, 0, 0, 0.9)' : '0 25px 50px -12px rgba(0, 0, 0, 0.5)') : 'none' }}>
+          <div className="map-modal-content" onClick={e => e.stopPropagation()} style={{ width: '80%', height: '90%', display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', borderRadius: '16px', overflow: 'hidden', transformOrigin: graphModalOrigin, transform: isGraphModalVisible ? 'scale(1) translateY(0)' : 'scale(0.05) translateY(50px)', opacity: isGraphModalVisible ? 1 : 0, transition: 'transform 0.35s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.3s ease', boxShadow: isGraphModalVisible ? (isDarkMode ? '0 25px 50px -12px rgba(0, 0, 0, 0.9)' : '0 25px 50px -12px rgba(0, 0, 0, 0.5)') : 'none' }}>
             <div className="map-modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'var(--brand-gradient)', color: 'white', padding: '15px 30px' }}>
               <div><h3 style={{ margin: 0, fontSize: '1.4rem', color: 'white' }}>Enterprise Analytics Overview</h3></div>
               <button onClick={closeGraphModal} style={{ background: 'transparent', border: 'none', color: 'white', fontSize: '1.5rem', cursor: 'pointer', outline: 'none', marginBottom: '10px' }}>x</button>
             </div>
             
-            <div className="custom-scrollbar" style={{ flex: 1, padding: '25px', display: 'flex', flexDirection: 'column', overflowY: 'auto' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '20px' }}>
+            <div className="custom-scrollbar" style={{ flex: 1, padding: '16px', display: 'flex', flexDirection: 'column', overflowY: 'auto', scrollbarGutter: 'stable' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '20px'}}>
 
-                <div style={{ background: 'var(--bg-input)', padding: '20px', borderRadius: '12px', border: '1px solid var(--border-light)', boxShadow: isDarkMode ? '0 4px 12px rgba(0,0,0,0.4)' : '0 4px 12px rgba(0,0,0,0.05)' }}>
+                <div style={{ background: 'var(--bg-input)', padding: '12px 20px', borderRadius: '12px', border: '1px solid var(--border-light)', boxShadow: isDarkMode ? '0 4px 12px rgba(0,0,0,0.4)' : '0 4px 12px rgba(0,0,0,0.05)' }}>
                   <div style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', fontWeight: 'bold', textTransform: 'uppercase' }}>Total Occurrences</div>
-                  <div style={{ fontSize: '2.2rem', fontWeight: 'bold', color: isDarkMode ? '#ffffff' : 'var(--brand-purple)', marginTop: '5px' }}>{totalOccurrences}</div>
+                  <div style={{ fontSize: '1.4rem', fontWeight: 'bold', color: isDarkMode ? '#ffffff' : 'var(--brand-purple)', marginTop: '2px' }}>{totalOccurrences}</div>
                 </div>
-                <div style={{ background: 'var(--bg-input)', padding: '20px', borderRadius: '12px', border: '1px solid var(--border-light)', boxShadow: isDarkMode ? '0 4px 12px rgba(0,0,0,0.4)' : '0 4px 12px rgba(0,0,0,0.05)' }}>
+                <div style={{ background: 'var(--bg-input)', padding: '12px 20px', borderRadius: '12px', border: '1px solid var(--border-light)', boxShadow: isDarkMode ? '0 4px 12px rgba(0,0,0,0.4)' : '0 4px 12px rgba(0,0,0,0.05)' }}>
                   <div style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', fontWeight: 'bold', textTransform: 'uppercase' }}>Unique Sites Affected</div>
-                  <div style={{ fontSize: '2.2rem', fontWeight: 'bold', color: 'var(--color-info)', marginTop: '5px' }}>{uniqueSitesCount}</div>
+                  <div style={{ fontSize: '1.4rem', fontWeight: 'bold', color: 'var(--color-info)', marginTop: '2px' }}>{uniqueSitesCount}</div>
                 </div>
-                <div style={{ background: 'var(--bg-input)', padding: '20px', borderRadius: '12px', border: '1px solid var(--border-light)', boxShadow: isDarkMode ? '0 4px 12px rgba(0,0,0,0.4)' : '0 4px 12px rgba(0,0,0,0.05)' }}>
+                <div style={{ background: 'var(--bg-input)', padding: '12px 20px', borderRadius: '12px', border: '1px solid var(--border-light)', boxShadow: isDarkMode ? '0 4px 12px rgba(0,0,0,0.4)' : '0 4px 12px rgba(0,0,0,0.05)' }}>
                   <div style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', fontWeight: 'bold', textTransform: 'uppercase' }}>Unique Alarm Types</div>
-                  <div style={{ fontSize: '2.2rem', fontWeight: 'bold', color: 'var(--brand-purple)', marginTop: '5px' }}>{uniqueAlarmTypesCount}</div>
+                  <div style={{ fontSize: '1.4rem', fontWeight: 'bold', color: 'var(--brand-purple)', marginTop: '2px' }}>{uniqueAlarmTypesCount}</div>
                 </div>
-                <div style={{ background: 'var(--bg-input)', padding: '20px', borderRadius: '12px', border: '1px solid var(--border-light)', borderTop: '4px solid var(--color-danger)', boxShadow: isDarkMode ? '0 4px 12px rgba(0,0,0,0.4)' : '0 4px 12px rgba(0,0,0,0.05)' }}>
+                <div style={{ background: 'var(--bg-input)', padding: '12px 20px', borderRadius: '12px', border: '1px solid var(--border-light)', borderTop: '4px solid var(--color-danger)', boxShadow: isDarkMode ? '0 4px 12px rgba(0,0,0,0.4)' : '0 4px 12px rgba(0,0,0,0.05)' }}>
                   <div style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', fontWeight: 'bold', textTransform: 'uppercase' }}>Most Critical Alarm</div>
-                  <div style={{ fontSize: '1rem', fontWeight: 'bold', color: 'var(--color-danger)', marginTop: '10px', wordBreak: 'break-word', lineHeight: '1.2' }}>{mostCriticalAlarm}</div>
+                  <div style={{ fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--color-danger)', marginTop: '2px', wordBreak: 'break-word', lineHeight: '1.1', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{mostCriticalAlarm}</div>
+                </div>
+                
+                <div style={{ gridColumn: 'span 4', background: 'var(--bg-input)', padding: '20px', borderRadius: '12px', border: '1px solid var(--border-light)', display: 'flex', flexDirection: 'column', height: '300px', boxShadow: isDarkMode ? '0 4px 12px rgba(0,0,0,0.4)' : '0 4px 12px rgba(0,0,0,0.05)' }}>
+                  <h4 style={{ margin: '0 0 15px 0', color: 'var(--text-primary)' }}>
+                    Time Trend ({dashboardMode === 'wireless' ? 'Alarm Time' : 'Last Occurred'})
+                  </h4>
+                  <div style={{ flex: 1, minHeight: 0 }}>
+                    <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
+                      <ComposedChart data={timeAnalytics.hourlyData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="var(--border-light)" vertical={false} />
+                        <XAxis
+                          dataKey="hour"
+                          stroke="var(--text-secondary)"
+                          tick={{ fontSize: 10, fill: isDarkMode ? '#8BA1B5' : 'var(--text-secondary)' }}
+                          interval={0}
+                        />
+                        <YAxis
+                          stroke="var(--text-secondary)"
+                          tick={{ fontSize: 12 }}
+                          allowDecimals={false}
+                          ticks={trendYAxisTicks}
+                          domain={[0, trendYAxisTicks[trendYAxisTicks.length - 1]]}
+                        />
+                        <RechartsTooltip />
+                        <Bar dataKey="count" radius={[4, 4, 0, 0]} fill="var(--brand-purple)" fillOpacity={0.5} />
+                        <Line
+                          type="monotone"
+                          dataKey="count"
+                          stroke={isDarkMode ? '#9b7bff' : '#5b21b6'}
+                          strokeWidth={2.4}
+                          dot={{ r: 3, fill: isDarkMode ? '#d6ccff' : '#5b21b6', strokeWidth: 0 }}
+                          activeDot={{ r: 4 }}
+                        />
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div style={{ marginTop: '8px', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                    Timed Rows: <span style={{ color: 'var(--text-primary)', fontWeight: 'bold' }}>{timeAnalytics.timedRows}/{timeAnalytics.observedRows}</span>
+                    {dashboardMode === 'transport' && (
+                      <span style={{ marginLeft: '12px' }}>
+                        MTTA: <span style={{ color: 'var(--text-primary)', fontWeight: 'bold' }}>{formatMinutesCompact(timeAnalytics.mttaAvgMin)}</span>
+                        <span style={{ marginLeft: '10px' }}>MTTR: <span style={{ color: 'var(--text-primary)', fontWeight: 'bold' }}>{formatMinutesCompact(timeAnalytics.mttrAvgMin)}</span></span>
+                      </span>
+                    )}
+                  </div>
                 </div>
 
                 <div style={{ gridColumn: 'span 4', background: 'var(--bg-input)', padding: '20px', borderRadius: '12px', border: '1px solid var(--border-light)', display: 'flex', flexDirection: 'column', height: '320px', boxShadow: isDarkMode ? '0 4px 12px rgba(0,0,0,0.4)' : '0 4px 12px rgba(0,0,0,0.05)' }}>
@@ -1954,14 +2301,20 @@ const headerActions = (
                           height={60} 
                           tickFormatter={(val) => val.length > 20 ? val.substring(0,20)+'...' : val} 
                         />
-                        <YAxis stroke="var(--text-secondary)" tick={{fontSize: 12}} />
+                        <YAxis
+                          stroke="var(--text-secondary)"
+                          tick={{fontSize: 12}}
+                          allowDecimals={false}
+                          ticks={alarmFrequencyYAxisTicks}
+                          domain={[0, alarmFrequencyYAxisTicks[alarmFrequencyYAxisTicks.length - 1]]}
+                        />
                         <RechartsTooltip cursor={{fill: isDarkMode ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)'}} content={<CustomGraphTooltip />} />
                         <Bar 
                           dataKey="count" 
                           radius={[4, 4, 0, 0]} 
                           animationDuration={1000} 
                           style={{ outline: 'none' }}
-                          minPointSize={20}
+                          minPointSize={3}
                           background={{ fill: 'rgba(0,0,0,0.001)' }}
                           activeBar={<Rectangle fillOpacity={0.8} stroke="var(--brand-purple)" />}
                           onClick={(data) => {

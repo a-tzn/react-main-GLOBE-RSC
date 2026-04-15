@@ -30,9 +30,13 @@ function promisifyGasCall(functionName, ...args) {
   });
 }
 
-// DEVELOPMENT API ENDPOINT
-// UPDATE THIS URL when you create a new GAS deployment
-const API_BASE_URL = 'https://script.google.com/a/macros/umindanao.edu.ph/s/AKfycbwZbMC8pCRlYw_uORG-c55zSdNVKfZeRdxPH18sefsRi5XUg_D5CkMoz_HZ4PMWFXc7ZA/exec';
+// DEVELOPMENT API ENDPOINTS
+// In local dev, prefer Vite proxy (/api/gas) to avoid browser CORS issues.
+const DEFAULT_GAS_URL = 'https://script.google.com/macros/s/AKfycbzYvpILMHQaCZaNXurBChx8hthrSyj_FqdKtNcZiiFG61YwnynIIJBT58Lzz51mrBka0w/exec';
+const API_BASE_URL = import.meta.env.VITE_GAS_API_URL || DEFAULT_GAS_URL;
+const API_DEV_PROXY_PATH = import.meta.env.VITE_GAS_DEV_PROXY_PATH || '/api/gas';
+const FORCE_DIRECT_GAS = String(import.meta.env.VITE_GAS_FORCE_DIRECT || '').toLowerCase() === 'true';
+const HAS_ENV_GAS_URL = Boolean(import.meta.env.VITE_GAS_API_URL);
 const USER_INFO_CACHE_KEY = 'gas_user_info_cache_v1';
 const USER_INFO_CACHE_TTL_MS = 30 * 60 * 1000;
 
@@ -97,12 +101,37 @@ function writeCachedUserInfoInternal(userData) {
 }
 
 async function postApi(payload) {
-  const response = await fetch(API_BASE_URL, {
+  const shouldUseDevProxy = import.meta.env.DEV && !FORCE_DIRECT_GAS && HAS_ENV_GAS_URL;
+  const endpoint = shouldUseDevProxy ? API_DEV_PROXY_PATH : API_BASE_URL;
+  const response = await fetch(endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
   });
-  return response.json();
+  const raw = await response.text();
+
+  if (!raw || !raw.trim()) {
+    throw new Error(
+      `Empty response from GAS endpoint (${endpoint}). This usually means auth/permission or deployment URL mismatch.`
+    );
+  }
+
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    const snippet = raw.slice(0, 180).replace(/\s+/g, ' ');
+    throw new Error(
+      `Non-JSON response from GAS endpoint (${endpoint}). Status ${response.status}. Body starts with: ${snippet}`
+    );
+  }
+
+  if (!response.ok) {
+    const message = data?.error || `HTTP ${response.status}`;
+    throw new Error(`GAS request failed: ${message}`);
+  }
+
+  return data;
 }
 
 /**
@@ -140,8 +169,9 @@ export function getUserUploadedDataSummary(limit = 50, dataType = '', includeAll
   const runner = getGoogleScriptRunner();
 
   if (runner) {
-    const fnName = includeAll ? 'getUploadedDataSummary' : 'getUserUploadedDataSummary';
-    return promisifyGasCall(fnName, limit, dataType, includeAll)
+    // Use the bridge method that is guaranteed to exist in code.gs.
+    // Some deployments may not expose getUploadedDataSummary directly.
+    return promisifyGasCall('getUserUploadedDataSummary', limit, dataType, includeAll)
       .then((result) => {
         if (!result.success) throw new Error(result.error || 'Failed to retrieve data summary');
         return result.data;

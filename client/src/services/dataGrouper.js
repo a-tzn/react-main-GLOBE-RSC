@@ -281,7 +281,8 @@ export function processTransportAlarms(data) {
     const groupedAlarms = {};
     for (let i = 0; i < data.length; i++) {
       const row = data[i];
-      const alarm = getColValue(row, ["NAME"]) || "Unknown Alarm";
+      const sourceType = getColValue(row, ["ALARM SOURCE TYPE", "SOURCE TYPE"]) || "Unknown Source Type";
+      const alarm = getColValue(row, ["NAME", "ALARM NAME"]) || sourceType || "Unknown Alarm";
       const li = getColValue(row, ["LOCATION INFO"]) || "N/A";
       const sn = getColValue(row, ["ALARM SOURCE"]) || "Unknown Site";
       const severity = getColValue(row, ["SEVERITY"]) || "N/A";
@@ -290,7 +291,7 @@ export function processTransportAlarms(data) {
         continue;
       }
 
-      const key = [alarm, li, sn, severity].join(DATA_DELIMITER);
+      const key = [alarm, li, sn, severity, sourceType].join(DATA_DELIMITER);
       if (!groupedAlarms[key]) {
         groupedAlarms[key] = [];
       }
@@ -309,6 +310,7 @@ export function processTransportAlarms(data) {
           li: parts[1],
           sn: parts[2],
           severity: parts[3],
+          sourceType: parts[4] || "Unknown Source Type",
           count,
           rawRows: rawRowsArray
         });

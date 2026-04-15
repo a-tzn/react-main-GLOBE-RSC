@@ -208,9 +208,11 @@ export default function SMDashboard() {
   const chatContainerRef = useRef(null);
   const sidebarTopRef = useRef(null);
   const listContainerRef = useRef(null);
+  const tableListOuterRef = useRef(null);
   const filterWorkerRef = useRef(null);
   const filterRequestIdRef = useRef(0);
   const workerPerfRef = useRef(new Map());
+  const [tableScrollbarWidth, setTableScrollbarWidth] = useState(0);
 
   const currentLogo = isDarkMode ? globeLogoDark : globeLogoLight;
 
@@ -274,6 +276,26 @@ export default function SMDashboard() {
     observer.observe(listContainerRef.current);
     return () => observer.disconnect();
   }, [results.length]);
+
+  useEffect(() => {
+    const listOuter = tableListOuterRef.current;
+    if (!listOuter) {
+      setTableScrollbarWidth(0);
+      return undefined;
+    }
+
+    const updateScrollbarWidth = () => {
+      setTableScrollbarWidth(Math.max(0, listOuter.offsetWidth - listOuter.clientWidth));
+    };
+
+    updateScrollbarWidth();
+
+    if (typeof ResizeObserver === 'undefined') return undefined;
+
+    const observer = new ResizeObserver(() => updateScrollbarWidth());
+    observer.observe(listOuter);
+    return () => observer.disconnect();
+  }, [mainListSize.width, results.length, filterStatus, debouncedTerm, workerFilteredIndices.length]);
 
   useEffect(() => {
     if (typeof Worker === 'undefined') {
@@ -632,24 +654,29 @@ export default function SMDashboard() {
         }
       )
         .then(async () => {
-          const [updatedStoredData, lastModified] = await Promise.all([
-            getUserUploadedDataSummary(10, 'storm-masterlist', true),
-            getLastModifiedInfo('storm-masterlist')
-          ]);
-          setStoredData(updatedStoredData);
-          setLastModifiedInfo(lastModified);
-          saveDashboardCache({
-            nextUserInfo: userInfo || getCachedUserInfo() || null,
-            nextStoredData: updatedStoredData,
-            nextLastModifiedInfo: lastModified,
-            latestStoredData: {
-              processedData: safeData,
-              fileName: fileNames,
-              metadata: { summaryStats }
-            },
-            latestPreviewData: safeData,
-            nextSummaryStats: summaryStats
-          }).catch((err) => console.warn('IndexedDB Write Failed', err));
+          try {
+            const [updatedStoredData, lastModified] = await Promise.all([
+              getUserUploadedDataSummary(10, 'storm-masterlist', true),
+              getLastModifiedInfo('storm-masterlist')
+            ]);
+            setStoredData(updatedStoredData);
+            setLastModifiedInfo(lastModified);
+            saveDashboardCache({
+              nextUserInfo: userInfo || getCachedUserInfo() || null,
+              nextStoredData: updatedStoredData,
+              nextLastModifiedInfo: lastModified,
+              latestStoredData: {
+                processedData: safeData,
+                fileName: fileNames,
+                metadata: { summaryStats }
+              },
+              latestPreviewData: safeData,
+              nextSummaryStats: summaryStats
+            }).catch((err) => console.warn('IndexedDB Write Failed', err));
+          } catch (refreshError) {
+            // Save already succeeded; this is only a post-save refresh failure.
+            console.warn('Saved successfully but failed to refresh dashboard history:', refreshError);
+          }
         })
         .catch((storeError) => {
           console.error('Failed to store data:', storeError);
@@ -874,6 +901,29 @@ export default function SMDashboard() {
     });
   };
 
+  const TABLE_GRID_COLUMNS = '8fr 8fr 20fr 10fr 28fr 26fr';
+  const TABLE_GRID_STYLE = {
+    display: 'grid',
+    gridTemplateColumns: TABLE_GRID_COLUMNS,
+    columnGap: '15px',
+    alignItems: 'center'
+  };
+
+  const TABLE_COLUMN_BASE_STYLE = {
+    display: 'block',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    boxSizing: 'border-box',
+    minWidth: 0,
+    width: '100%'
+  };
+
+  const getTableColumnStyle = (extraStyles = {}) => ({
+    ...TABLE_COLUMN_BASE_STYLE,
+    ...extraStyles
+  });
+
   const VirtualizedRow = ({ index, style }) => {
     const resultIndex = visibleResultIndices[index];
     const row = results[resultIndex];
@@ -889,8 +939,7 @@ export default function SMDashboard() {
 
     const rowStyle = {
       ...style,
-      display: 'flex',
-      alignItems: 'center',
+      ...TABLE_GRID_STYLE,
       padding: '0 20px',
       boxSizing: 'border-box',
       cursor: 'pointer',
@@ -904,14 +953,6 @@ export default function SMDashboard() {
     if (isExactRow) rowStyle.backgroundColor = 'rgba(0, 123, 255, 0.2)';
     else if (isSameGroup) rowStyle.backgroundColor = 'rgba(128, 128, 128, 0.15)';
 
-    const columnStyle = {
-      whiteSpace: 'nowrap',
-      overflow: 'hidden',
-      textOverflow: 'ellipsis',
-      paddingRight: '15px',
-      boxSizing: 'border-box'
-    };
-
     return (
       <div
         style={rowStyle}
@@ -923,26 +964,26 @@ export default function SMDashboard() {
           setSelectedRowDetails(row);
         }}
       >
-        <div style={{ ...columnStyle, width: '12%', fontWeight: 'bold' }}>
+        <div style={getTableColumnStyle({ fontWeight: 'bold' })}>
           {isFirstOfGroup ? (row.plaId === 'NEW_SITE' ? 'N/A' : row.plaId) : ''}
         </div>
-        <div style={{ ...columnStyle, width: '12%' }}>
+        <div style={getTableColumnStyle()}>
           {isFirstOfGroup && (
             <span className={`status-badge ${row.matchStatus.toLowerCase()}`}>
               {row.matchStatus}
             </span>
           )}
         </div>
-        <div style={{ ...columnStyle, width: '19%', fontWeight: '500' }}>
+        <div style={getTableColumnStyle({ fontWeight: '500' })}>
           {isFirstOfGroup ? row.baseLocation : ''}
         </div>
-        <div style={{ ...columnStyle, width: '12%', fontWeight: 'bold', color: row.techGen?.includes('5G') ? '#28a745' : (row.techGen?.includes('4G') ? '#007bff' : '#666') }}>
+        <div style={getTableColumnStyle({ fontWeight: 'bold', color: row.techGen?.includes('5G') ? '#28a745' : (row.techGen?.includes('4G') ? '#007bff' : '#666') })}>
           {row.techGen}
         </div>
-        <div style={{ ...columnStyle, width: '25%', fontFamily: 'monospace', color: '#1a73e8', fontWeight: 'bold' }}>
+        <div style={getTableColumnStyle({ fontFamily: 'monospace', color: '#1a73e8', fontWeight: 'bold' })}>
           {row.nmsName}
         </div>
-        <div style={{ ...columnStyle, width: '20%', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+        <div style={getTableColumnStyle({ fontSize: '0.75rem', color: 'var(--text-secondary)' })}>
           {isFirstOfGroup ? row.remarks : ''}
         </div>
       </div>
@@ -1517,15 +1558,16 @@ const headerActions = (
             </div>
                       <div className="output-box" style={{ flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: 'var(--bg-primary)' }}>
                         <div className="table-wrapper" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                          <div style={{ display: 'flex', padding: '16px 20px', fontWeight: 600, borderBottom: isDarkMode ? '1px solid rgba(255, 255, 255, 0.08)' : '1px solid rgba(15, 23, 42, 0.18)', background: isDarkMode ? 'linear-gradient(180deg, rgba(17, 28, 68, 0.95) 0%, rgba(17, 28, 68, 0.85) 100%)' : 'linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(255, 255, 255, 0.75) 100%)', color: 'var(--text-secondary)', textTransform: 'uppercase', fontSize: '0.85rem' }}>
-                            <div style={{ width: '12%', paddingRight: '15px' }}>PLA_ID</div>
-                            <div style={{ width: '12%', paddingRight: '15px' }}>Status</div>
-                            <div style={{ width: '19%', paddingRight: '15px' }}>Base Name</div>
-                            <div style={{ width: '12%', paddingRight: '15px', color: '#1a73e8' }}>Technology</div>
-                            <div style={{ width: '25%', paddingRight: '15px', color: '#1a73e8' }}>BCF NAME</div>
-                            <div style={{ width: '20%', paddingRight: '15px' }}>Remarks</div>
+                          <div style={{ ...TABLE_GRID_STYLE, paddingTop: '16px', paddingBottom: '16px', paddingLeft: '20px', paddingRight: `${20 + tableScrollbarWidth}px`, fontWeight: 600, borderBottom: isDarkMode ? '1px solid rgba(255, 255, 255, 0.08)' : '1px solid rgba(15, 23, 42, 0.18)', background: isDarkMode ? 'linear-gradient(180deg, rgba(17, 28, 68, 0.95) 0%, rgba(17, 28, 68, 0.85) 100%)' : 'linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(255, 255, 255, 0.75) 100%)', color: 'var(--text-secondary)', textTransform: 'uppercase', fontSize: '0.85rem', boxSizing: 'border-box' }}>
+                            <div style={getTableColumnStyle()}>PLA_ID</div>
+                            <div style={getTableColumnStyle()}>Status</div>
+                            <div style={getTableColumnStyle()}>Base Name</div>
+                            <div style={getTableColumnStyle({ color: '#1a73e8' })}>Technology</div>
+                            <div style={getTableColumnStyle({ color: '#1a73e8' })}>BCF NAME</div>
+                            <div style={getTableColumnStyle()}>Remarks</div>
                           </div>
                           <div ref={listContainerRef} style={{ flex: 1, width: '100%', overflow: 'hidden', position: 'relative' }}>
+
                       {(() => {
                         const isProcessing = isInitialDataLoading || isLoading || isStoredDataLoading;
                         const isDatabaseSyncing = isInitialDataLoading || isStoredDataLoading || isRefreshingSavedData;
@@ -1553,7 +1595,8 @@ const headerActions = (
                                 itemSize={58} // SM Dashboard uses 58px rows
                                 width={mainListSize.width} 
                                 overscanCount={10} 
-                                className="custom-scrollbar"
+                                outerRef={tableListOuterRef}
+                                className="custom-scrollbar sm-table-scroll"
                               >
                                 {VirtualizedRow}
                               </List>

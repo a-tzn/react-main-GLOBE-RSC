@@ -1791,6 +1791,11 @@ body.dark-mode .map-modal-header {
   scrollbar-gutter: stable both-edges;
 }
 
+/* Keep Storm Master table body aligned with header (no left gutter reservation). */
+.sm-table-scroll {
+  scrollbar-gutter: stable !important;
+}
+
 /* Dark Mode: Adjust contrast for dark backgrounds */
 body.dark-mode .custom-scrollbar::-webkit-scrollbar-track {
   background: rgba(255, 255, 255, 0.08);
