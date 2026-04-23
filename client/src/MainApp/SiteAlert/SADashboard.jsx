@@ -21,9 +21,9 @@ import fileLight from '../../assets/fileLight.png';
 import warningDark from '../../assets/warningDark.png';
 
 import { ComposedChart, BarChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, Cell, Rectangle } from 'recharts';
-import { FixedSizeList as List, VariableSizeList } from 'react-window';
+import { List } from 'react-window';
 
-import * as XLSX from 'xlsx';
+import * as XLSX from '@e965/xlsx';
 import { useNavigate } from "react-router-dom";
 
 import DashboardLayout from '../../components/DashboardLayout';
@@ -94,6 +94,7 @@ function buildAxisTicks(maxValue, step) {
 }
 
 export default function SADashboard() {
+  const createModeState = (value) => ({ wireless: value, transport: value });
   const [monitorFile1, setMonitorFile1] = useState(null); 
   const [monitorFile2, setMonitorFile2] = useState(null); 
   const [isLoading, setIsLoading] = useState(false);
@@ -130,6 +131,7 @@ export default function SADashboard() {
   const [selectedGraphAlarm, setSelectedGraphAlarm] = useState(null);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [showUserDropdown, setShowUserDropdown] = useState(false);
+  const [showNotificationMenu, setShowNotificationMenu] = useState(false);
 
   const [themeModal, setThemeModal] = useState({
     visible: false,
@@ -216,6 +218,11 @@ export default function SADashboard() {
   const [userInfo, setUserInfo] = useState(() => getCachedUserInfo());
   const [lastModifiedInfo, setLastModifiedInfo] = useState(null);
   const [persistedSummaryStats, setPersistedSummaryStats] = useState(null);
+  const [notificationsByMode, setNotificationsByMode] = useState(() => createModeState([]));
+  const [activeLoadedRecordIdByMode, setActiveLoadedRecordIdByMode] = useState(() => createModeState(null));
+  const [pendingIncomingRecordByMode, setPendingIncomingRecordByMode] = useState(() => createModeState(null));
+  const [showIncomingBannerByMode, setShowIncomingBannerByMode] = useState(() => createModeState(false));
+  const [latestKnownRecordIdByMode, setLatestKnownRecordIdByMode] = useState(() => createModeState(null));
   const [mainListSize, setMainListSize] = useState({ width: '100%', height: 600 });
   const [workerFilteredIndices, setWorkerFilteredIndices] = useState([]);
   const [workerReady, setWorkerReady] = useState(false);
@@ -233,6 +240,11 @@ export default function SADashboard() {
   const cacheKey = `site_alert_cache_${dashboardMode}_v1`;
   const cacheMetaKey = `${cacheKey}_meta`;
   const cacheDataKey = `${cacheKey}_full`;
+  const notifications = notificationsByMode[dashboardMode] || [];
+  const activeLoadedRecordId = activeLoadedRecordIdByMode[dashboardMode] || null;
+  const pendingIncomingRecord = pendingIncomingRecordByMode[dashboardMode] || null;
+  const showIncomingBanner = showIncomingBannerByMode[dashboardMode] || false;
+  const latestKnownRecordId = latestKnownRecordIdByMode[dashboardMode] || null;
 
   const buildSiteAlertSummaryStats = (rows) => {
     const safeRows = Array.isArray(rows) ? rows : [];
@@ -253,8 +265,87 @@ export default function SADashboard() {
       mostCriticalAlarm: sortedAlarms[0]?.[0] || 'N/A'
     };
   };
+
+  const updateModeScopedState = (setter, updater, mode = dashboardMode) => {
+    setter((prev) => ({
+      ...prev,
+      [mode]: typeof updater === 'function' ? updater(prev[mode]) : updater
+    }));
+  };
+
+  const formatNotificationTimestamp = (value = Date.now()) =>
+    new Date(value).toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+
+  const addNotification = ({
+    mode = dashboardMode,
+    type = 'activity',
+    title,
+    message,
+    actionType = null,
+    actionLabel = null,
+    meta = null,
+    read = false
+  }) => {
+    updateModeScopedState(setNotificationsByMode, (prev = []) => {
+      const nextItem = {
+        id: `${mode}-${type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        type,
+        title,
+        message,
+        actionType,
+        actionLabel,
+        meta,
+        read,
+        createdAt: Date.now(),
+        timestampLabel: formatNotificationTimestamp()
+      };
+      return [nextItem, ...prev].slice(0, 25);
+    }, mode);
+  };
+
+  const markNotificationRead = (id, mode = dashboardMode) => {
+    updateModeScopedState(setNotificationsByMode, (prev = []) => (
+      prev.map((item) => (item.id === id ? { ...item, read: true } : item))
+    ), mode);
+  };
+
+  const markAllNotificationsRead = (mode = dashboardMode) => {
+    updateModeScopedState(setNotificationsByMode, (prev = []) => (
+      prev.map((item) => ({ ...item, read: true }))
+    ), mode);
+  };
+
+  const registerIncomingRecord = (incomingItem, mode = dashboardMode) => {
+    if (!incomingItem?.id) return;
+    updateModeScopedState(setPendingIncomingRecordByMode, (prev) => (
+      prev?.id === incomingItem.id ? prev : incomingItem
+    ), mode);
+    updateModeScopedState(setShowIncomingBannerByMode, true, mode);
+    updateModeScopedState(setNotificationsByMode, (prev = []) => {
+      const exists = prev.some((item) => item.type === 'incoming-data' && item.meta?.recordId === incomingItem.id);
+      if (exists) return prev;
+      const nextItem = {
+        id: `incoming-${mode}-${incomingItem.id}`,
+        type: 'incoming-data',
+        title: `${mode === 'wireless' ? 'Wireless' : 'Transport'} update available`,
+        message: `${incomingItem.fileName || 'New data'} is ready to load into the ${mode} table.`,
+        actionType: 'load-incoming',
+        actionLabel: 'Load now',
+        meta: { recordId: incomingItem.id, item: incomingItem, mode },
+        read: false,
+        createdAt: Date.now(),
+        timestampLabel: formatNotificationTimestamp(incomingItem.uploadDate || Date.now())
+      };
+      return [nextItem, ...prev].slice(0, 25);
+    }, mode);
+  };
   
-  const applyStoredProcessedData = (item) => {
+  const applyStoredProcessedData = (item, mode = dashboardMode) => {
     if (!item) return;
     const processedData = Array.isArray(item.processedData) ? item.processedData : [];
     setResults(processedData);
@@ -264,6 +355,11 @@ export default function SADashboard() {
     setSelectedRowDetails(null);
     handleSidebarViewChange('analytics');
     setIsSidebarCollapsed(false);
+    updateModeScopedState(setActiveLoadedRecordIdByMode, item.id || null, mode);
+    updateModeScopedState(setPendingIncomingRecordByMode, (prev) => (prev?.id === item.id ? null : prev), mode);
+    if (item.id && pendingIncomingRecordByMode[mode]?.id === item.id) {
+      updateModeScopedState(setShowIncomingBannerByMode, false, mode);
+    }
     
     setLoadedDataSource({
       date: new Date(item.uploadDate || Date.now()).toLocaleDateString(),
@@ -323,12 +419,12 @@ export default function SADashboard() {
 
     try {
       const fullStoredData = await getUploadedDataById(latestStoredDataId, true, dashboardMode);
-      applyStoredProcessedData(fullStoredData);
+      applyStoredProcessedData({ ...fullStoredData, id: fullStoredData.id || latestStoredDataId }, dashboardMode);
       await saveDashboardCache({
         nextUserInfo: userInfo || getCachedUserInfo() || null,
         nextStoredData: storedData,
         nextLastModifiedInfo: lastModifiedInfo,
-        latestStoredData: fullStoredData,
+        latestStoredData: { ...fullStoredData, id: fullStoredData.id || latestStoredDataId },
         latestPreviewData: fullStoredData?.metadata?.previewData || results,
         nextSummaryStats: fullStoredData?.metadata?.summaryStats || persistedSummaryStats
       });
@@ -442,6 +538,7 @@ useEffect(() => {
           hasFreshCache = true;
           setUserInfo(cachedMeta.userInfo || getCachedUserInfo() || null);
           setStoredData(cachedMeta.storedData || []);
+          updateModeScopedState(setLatestKnownRecordIdByMode, cachedMeta.storedData?.[0]?.id || null, dashboardMode);
           const latestCachedSummary = Array.isArray(cachedMeta.storedData) && cachedMeta.storedData.length > 0 ? cachedMeta.storedData[0] : null;
           const cachedPreview = Array.isArray(cachedMeta.latestPreviewData) ? cachedMeta.latestPreviewData : [];
           const cachedProcessedRecords = Number(latestCachedSummary?.processedCount ?? latestCachedSummary?.metadata?.processedRecords ?? cachedPreview.length);
@@ -480,6 +577,7 @@ useEffect(() => {
         if (!isMounted) return;
 
         setStoredData(storedDataList);
+        updateModeScopedState(setLatestKnownRecordIdByMode, (prev) => prev || storedDataList?.[0]?.id || null, dashboardMode);
         setLastModifiedInfo(lastModified);
 
         const latestSummary = storedDataList.length > 0 ? storedDataList[0] : null;
@@ -491,9 +589,9 @@ useEffect(() => {
         setIsFullDataLoaded(false);
 
         if (!hasFreshCache && previewData.length > 0) {
-          setResults(toPreviewRows(previewData));
-          setPersistedSummaryStats(summaryStats);
-          setIsInitialDataLoading(false);
+        setResults(toPreviewRows(previewData));
+        setPersistedSummaryStats(summaryStats);
+        setIsInitialDataLoading(false);
         } else if (!hasFreshCache) {
           setPersistedSummaryStats(null);
           setIsInitialDataLoading(false);
@@ -731,6 +829,8 @@ useEffect(() => {
     setIsFullDataLoaded(true);
     setLatestStoredDataId(null);
     setExpectedResultCount(0);
+    updateModeScopedState(setPendingIncomingRecordByMode, null, dashboardMode);
+    updateModeScopedState(setShowIncomingBannerByMode, false, dashboardMode);
 
     try {
       const nmsData = await readUniversalFile(monitorFile1);
@@ -767,6 +867,11 @@ useEffect(() => {
         setPersistedSummaryStats(summaryStats);
         handleSidebarViewChange('analytics');
         setIsSidebarCollapsed(false);
+        addNotification({
+          mode: dashboardMode,
+          title: `${dashboardMode === 'wireless' ? 'Wireless' : 'Transport'} scan finished`,
+          message: `${safeProcessedData.length} alert groups were processed.`
+        });
 
         const fileNames = dashboardMode === 'wireless'
           ? `${monitorFile1.name} + ${monitorFile2.name}`
@@ -793,12 +898,15 @@ useEffect(() => {
                 getLastModifiedInfo(dashboardMode)
               ]);
               setStoredData(updatedStoredData);
+              updateModeScopedState(setLatestKnownRecordIdByMode, updatedStoredData?.[0]?.id || null, dashboardMode);
+              updateModeScopedState(setActiveLoadedRecordIdByMode, updatedStoredData?.[0]?.id || null, dashboardMode);
               setLastModifiedInfo(lastModified);
               saveDashboardCache({
                 nextUserInfo: userInfo || getCachedUserInfo() || null,
                 nextStoredData: updatedStoredData,
                 nextLastModifiedInfo: lastModified,
                 latestStoredData: {
+                  id: updatedStoredData?.[0]?.id || null,
                   processedData: safeProcessedData,
                   fileName: fileNames,
                   metadata: { summaryStats }
@@ -914,6 +1022,11 @@ useEffect(() => {
     setShowExportMenu(false);
     if (exportCategory === 'ALL') {
       handleExport();
+      addNotification({
+        mode: dashboardMode,
+        title: `${dashboardMode === 'wireless' ? 'Wireless' : 'Transport'} export completed`,
+        message: 'The current table was exported successfully.'
+      });
       return;
     }
     showThemeModal({
@@ -924,17 +1037,18 @@ useEffect(() => {
     });
   };
 
-  const handleLoadStoredData = async (storedDataItem) => {
+  const handleLoadStoredData = async (storedDataItem, modeOverride = dashboardMode) => {
     try {
       setIsStoredDataLoading(true);
       setLatestStoredDataId(storedDataItem?.id || null);
-      const fullStoredData = await getUploadedDataById(storedDataItem.id, true, dashboardMode);
-      applyStoredProcessedData(fullStoredData);
+      const fullStoredData = await getUploadedDataById(storedDataItem.id, true, modeOverride);
+      applyStoredProcessedData({ ...fullStoredData, id: fullStoredData.id || storedDataItem.id }, modeOverride);
+      updateModeScopedState(setLatestKnownRecordIdByMode, storedData?.[0]?.id || storedDataItem?.id || null, modeOverride);
       saveDashboardCache({
         nextUserInfo: userInfo || getCachedUserInfo() || null,
         nextStoredData: storedData,
         nextLastModifiedInfo: lastModifiedInfo,
-        latestStoredData: fullStoredData,
+        latestStoredData: { ...fullStoredData, id: fullStoredData.id || storedDataItem.id },
         latestPreviewData: fullStoredData?.metadata?.previewData || results,
         nextSummaryStats: fullStoredData?.metadata?.summaryStats || persistedSummaryStats
       }).catch((err) => console.warn('IndexedDB Write Failed', err));
@@ -944,6 +1058,22 @@ useEffect(() => {
         `Loaded data from: ${fullStoredData.fileName}\n${fullStoredData.processedData?.length || 0} results loaded.`,
         'success'
       );
+      addNotification({
+        mode: modeOverride,
+        title: `${modeOverride === 'wireless' ? 'Wireless' : 'Transport'} data loaded`,
+        message: `${storedDataItem.fileName || 'Stored dataset'} was loaded into the table.`
+      });
+      updateModeScopedState(setNotificationsByMode, (prev = []) => (
+        prev.map((entry) => (
+          entry.type === 'incoming-data' && entry.meta?.recordId === storedDataItem.id
+            ? { ...entry, read: true }
+            : entry
+        ))
+      ), modeOverride);
+      if (pendingIncomingRecordByMode[modeOverride]?.id === storedDataItem.id) {
+        updateModeScopedState(setPendingIncomingRecordByMode, null, modeOverride);
+        updateModeScopedState(setShowIncomingBannerByMode, false, modeOverride);
+      }
     } catch (error) {
       showToast('Load Error', `Error loading stored data: ${error.message}`, 'error');
     } finally {
@@ -1003,6 +1133,21 @@ useEffect(() => {
         setIsFullDataLoaded(false);
       }
       setLastModifiedInfo(lastModified);
+      if (
+        latestSummary?.id &&
+        activeLoadedRecordId &&
+        latestKnownRecordId &&
+        latestSummary.id !== latestKnownRecordId &&
+        latestSummary.id !== activeLoadedRecordId
+      ) {
+        registerIncomingRecord(latestSummary, dashboardMode);
+      }
+      updateModeScopedState(setLatestKnownRecordIdByMode, latestSummary?.id || latestKnownRecordId, dashboardMode);
+      addNotification({
+        mode: dashboardMode,
+        title: `${dashboardMode === 'wireless' ? 'Wireless' : 'Transport'} history refreshed`,
+        message: 'Latest processed records were checked from the database.'
+      });
       saveDashboardCache({
         nextUserInfo: userInfo || getCachedUserInfo() || null,
         nextStoredData: updatedStoredData,
@@ -1014,6 +1159,62 @@ useEffect(() => {
       console.error('Failed to refresh stored data:', error);
     }
   };
+
+  const handleIncomingLoadNow = async () => {
+    if (!pendingIncomingRecord) return;
+    await handleLoadStoredData(pendingIncomingRecord);
+  };
+
+  const handleNotificationAction = async (item) => {
+    if (!item) return;
+    const targetMode = item.meta?.mode || dashboardMode;
+    markNotificationRead(item.id, targetMode);
+    if (item.actionType === 'load-incoming' && item.meta?.item) {
+      if (targetMode !== dashboardMode) {
+        setDashboardMode(targetMode);
+      }
+      await handleLoadStoredData(item.meta.item, targetMode);
+      setShowNotificationMenu(false);
+      return;
+    }
+    if (item.actionType === 'open-history') {
+      handleSidebarViewChange('history');
+      setShowNotificationMenu(false);
+    }
+  };
+
+  useEffect(() => {
+    const latestSummary = storedData?.[0];
+    if (
+      !latestSummary?.id ||
+      !activeLoadedRecordId ||
+      !latestKnownRecordId ||
+      latestSummary.id === activeLoadedRecordId ||
+      latestSummary.id === latestKnownRecordId
+    ) return;
+    registerIncomingRecord(latestSummary, dashboardMode);
+    updateModeScopedState(setLatestKnownRecordIdByMode, latestSummary.id, dashboardMode);
+  }, [storedData, activeLoadedRecordId, latestKnownRecordId, dashboardMode]);
+
+  useEffect(() => {
+    if (!userInfo) return undefined;
+
+    const pollForIncomingData = async () => {
+      try {
+        const [updatedStoredData, lastModified] = await Promise.all([
+          getUserUploadedDataSummary(10, dashboardMode, true),
+          getLastModifiedInfo(dashboardMode)
+        ]);
+        setStoredData(updatedStoredData);
+        setLastModifiedInfo(lastModified);
+      } catch (error) {
+        console.warn(`Background incoming data check failed for ${dashboardMode}:`, error);
+      }
+    };
+
+    const intervalId = setInterval(pollForIncomingData, 45000);
+    return () => clearInterval(intervalId);
+  }, [userInfo, dashboardMode]);
 
   const filteredModalRows = useMemo(() => {
     if (!drillDownData || !drillDownData.rawRows) return [];
@@ -1205,9 +1406,10 @@ useEffect(() => {
 
   const isSearchUpdating = isSearchPending || deferredSearchTerm !== debouncedTerm || isWorkerBusy;
 
-  const handleMainListScroll = ({ scrollDirection, scrollOffset, scrollUpdateWasRequested }) => {
-    if (scrollUpdateWasRequested) return;
-    if (scrollDirection !== 'forward') return;
+  const handleMainListScroll = (event) => {
+    const target = event.currentTarget;
+    if (!target) return;
+    const scrollOffset = target.scrollTop;
     if (scrollOffset <= 0) return;
     if (isFullDataLoaded || isFullDataLoading) return;
     if (!latestStoredDataId) return;
@@ -1292,7 +1494,7 @@ useEffect(() => {
     return (gridRows * 120) + ((gridRows - 1) * 12) + 130; 
   };
 
-  const VirtualizedRow = ({ index, style }) => {
+  const VirtualizedRow = ({ index, style, filteredResults, isDarkMode, selectedRowDetails, dashboardMode, isFullDataLoading }) => {
     const row = filteredResults[index];
     let rowStyle = {
       ...style,
@@ -1305,6 +1507,14 @@ useEffect(() => {
       boxSizing: 'border-box',
       fontSize: '0.85rem'
     };
+    rowStyle.backgroundColor = index % 2 === 0
+      ? (isDarkMode ? 'rgba(255, 255, 255, 0.018)' : 'rgba(15, 23, 42, 0.018)')
+      : (isDarkMode ? 'rgba(148, 163, 184, 0.075)' : 'rgba(15, 23, 42, 0.05)');
+
+    if (selectedRowDetails === row) {
+      rowStyle.backgroundColor = isDarkMode ? 'rgba(56, 189, 248, 0.20)' : 'rgba(59, 130, 246, 0.12)';
+    }
+
     const columnStyle = { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', paddingRight: '15px', boxSizing: 'border-box' };
 
           return (
@@ -1335,7 +1545,7 @@ useEffect(() => {
           );
         };
 
-        const VirtualizedModalRow = ({ index, style }) => {
+        const VirtualizedModalRow = ({ index, style, filteredModalRows, getValidEntries, isDarkMode }) => {
           const raw = filteredModalRows[index];
           const validEntries = getValidEntries(raw);
           const findEntryValue = (keys = []) => {
@@ -1512,6 +1722,7 @@ useEffect(() => {
   const lastModifiedTimestamp = lastModifiedInfo?.timestamp
     ? new Date(lastModifiedInfo.timestamp).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
     : "No previous sync";
+  const notificationUnreadCount = notifications.filter((item) => !item.read).length;
 
   // ?? 2. HEADER ACTIONS CREATED SECOND (Now it can safely read the variables above!)
 const exportOptions = [
@@ -1523,14 +1734,33 @@ const headerActions = (
     lastModifiedText={lastModifiedName ? `${lastModifiedTimestamp} | ${lastModifiedName}` : lastModifiedTimestamp}
     exportDisabled={results?.length === 0}
     showExportMenu={showExportMenu}
-    onToggleExport={() => setShowExportMenu(!showExportMenu)}
+    onToggleExport={() => {
+      setShowNotificationMenu(false);
+      setShowExportMenu(!showExportMenu);
+    }}
     onCloseExport={() => setShowExportMenu(false)}
     exportOptions={exportOptions}
     onSelectExport={(value) => handleSpecificExport(value)}
     isDarkMode={isDarkMode}
     onToggleTheme={toggleTheme}
+    showNotificationMenu={showNotificationMenu}
+    onToggleNotification={() => {
+      setShowExportMenu(false);
+      setShowNotificationMenu((prev) => {
+        const nextValue = !prev;
+        if (nextValue) markAllNotificationsRead(dashboardMode);
+        return nextValue;
+      });
+    }}
+    onCloseNotification={() => setShowNotificationMenu(false)}
+    notifications={notifications}
+    notificationUnreadCount={notificationUnreadCount}
+    onNotificationAction={handleNotificationAction}
     showUserDropdown={showUserDropdown}
-    onToggleUserDropdown={() => setShowUserDropdown(!showUserDropdown)}
+    onToggleUserDropdown={() => {
+      setShowNotificationMenu(false);
+      setShowUserDropdown(!showUserDropdown);
+    }}
     onCloseUserDropdown={() => setShowUserDropdown(false)}
     userName={engineerName}
     userEmail={currentUserEmail}
@@ -1989,6 +2219,93 @@ const headerActions = (
             </div>
 
             <div className="output-box" style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative' }}>
+              {pendingIncomingRecord && showIncomingBanner && (
+                <div
+                  style={{
+                    margin: '14px 14px 0 14px',
+                    padding: '14px 16px',
+                    borderRadius: '16px',
+                    border: isDarkMode ? '1px solid rgba(56, 189, 248, 0.25)' : '1px solid rgba(2, 132, 199, 0.18)',
+                    background: isDarkMode
+                      ? 'linear-gradient(135deg, rgba(8, 47, 73, 0.92), rgba(17, 28, 68, 0.96))'
+                      : 'linear-gradient(135deg, rgba(240, 249, 255, 0.98), rgba(239, 246, 255, 0.96))',
+                    boxShadow: isDarkMode
+                      ? '0 10px 30px rgba(2, 132, 199, 0.12)'
+                      : '0 10px 24px rgba(14, 116, 144, 0.08)'
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '14px', flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', minWidth: 0, flex: '1 1 320px' }}>
+                      <div
+                        style={{
+                          width: '34px',
+                          height: '34px',
+                          borderRadius: '12px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          background: isDarkMode ? 'rgba(56, 189, 248, 0.16)' : 'rgba(2, 132, 199, 0.1)',
+                          color: isDarkMode ? '#7dd3fc' : '#0369a1',
+                          flexShrink: 0
+                        }}
+                      >
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M12 3v12" />
+                          <path d="m7 10 5 5 5-5" />
+                          <path d="M5 21h14" />
+                        </svg>
+                      </div>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: '0.92rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                          New {dashboardMode === 'wireless' ? 'wireless' : 'transport'} data is available
+                        </div>
+                        <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '4px', lineHeight: 1.45 }}>
+                          <span style={{ color: 'var(--brand-purple)', fontWeight: 700 }}>{pendingIncomingRecord.fileName || 'Latest upload'}</span>
+                          {' '}was added by{' '}
+                          <span style={{ color: 'var(--text-primary)', fontWeight: 700 }}>{pendingIncomingRecord.metadata?.engineerName || pendingIncomingRecord.userName || 'another user'}</span>.
+                          {' '}Load it now, or keep working and return to it from notifications later.
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                      <button
+                        type="button"
+                        className="primary-outline"
+                        onClick={() => {
+                          updateModeScopedState(setShowIncomingBannerByMode, false, dashboardMode);
+                          addNotification({
+                            mode: dashboardMode,
+                            title: `${dashboardMode === 'wireless' ? 'Wireless' : 'Transport'} incoming data saved for later`,
+                            message: 'You can load the latest dataset anytime from the notification panel.',
+                            actionType: 'open-history',
+                            actionLabel: 'Open history'
+                          });
+                        }}
+                        style={{ borderRadius: '999px', padding: '8px 14px', outline: 'none' }}
+                      >
+                        Later
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleIncomingLoadNow}
+                        style={{
+                          border: 'none',
+                          borderRadius: '999px',
+                          padding: '9px 16px',
+                          background: 'var(--brand-gradient)',
+                          color: '#fff',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          boxShadow: '0 10px 22px rgba(37, 99, 235, 0.18)',
+                          outline: 'none'
+                        }}
+                      >
+                        Update table
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
               <div className="table-wrapper" style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
                 <div style={{ display: 'flex', padding: '12px 35px 12px 20px', fontWeight: 'bold', borderBottom: isDarkMode ? '2px solid var(--border-color)' : '2px solid rgba(15, 23, 42, 0.18)', backgroundColor: 'var(--btn-scan-bg)', textTransform: 'uppercase', fontSize: '0.8rem', color: 'var(--text-inverse)' }}>
                   <div style={{ width: '12%', paddingRight: '15px' }}>{dashboardMode === 'wireless' ? 'PLA_ID' : 'SEVERITY'}</div>
@@ -2020,9 +2337,16 @@ const headerActions = (
                     if (hasData) {
                       return (
                         <div className={isTableRevealActive ? 'table-content-reveal' : ''} style={{ position: 'relative', width: '100%', height: '100%' }}>
-                          <List height={mainListSize.height} itemCount={filteredResults.length} itemSize={70} width={mainListSize.width} overscanCount={10} className="custom-scrollbar sa-table-scroll" onScroll={handleMainListScroll}>
-                            {VirtualizedRow}
-                          </List>
+                          <List
+                            rowCount={filteredResults.length}
+                            rowHeight={70}
+                            style={{ height: mainListSize.height, width: mainListSize.width }}
+                            overscanCount={10}
+                            className="custom-scrollbar sa-table-scroll"
+                            onScroll={handleMainListScroll}
+                            rowComponent={VirtualizedRow}
+                            rowProps={{ filteredResults, isDarkMode, selectedRowDetails, dashboardMode, isFullDataLoading }}
+                          />
                           {(showTableLoadingHint || isFullDataLoading) && (
                             <div
                               style={{
@@ -2192,9 +2516,15 @@ const headerActions = (
 
             <div style={{ flex: 1, padding: '20px 30px 0 30px', overflow: 'hidden' }}>
               {filteredModalRows.length > 0 ? (
-                <VariableSizeList height={modalListHeight} itemCount={filteredModalRows.length} itemSize={getModalRowHeight} width="100%" overscanCount={2} className="custom-scrollbar">
-                  {VirtualizedModalRow}
-                </VariableSizeList>
+                <List
+                  rowCount={filteredModalRows.length}
+                  rowHeight={getModalRowHeight}
+                  style={{ height: modalListHeight, width: '100%' }}
+                  overscanCount={2}
+                  className="custom-scrollbar"
+                  rowComponent={VirtualizedModalRow}
+                  rowProps={{ filteredModalRows, getValidEntries, isDarkMode }}
+                />
               ) : (
                 <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-secondary)' }}>No logs match your search.</div>
               )}

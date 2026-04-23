@@ -1,4 +1,4 @@
-import * as XLSX from 'xlsx';
+import * as XLSX from '@e965/xlsx';
 import { cityToProvinceMap } from '../../../MainApp/MapDictionary/TelecomDictionaries';
 import { calculateColumnWidths } from '../../../services/xlsxExporter';
 import { parseLocationData, getShortRegionByProvince } from '../../../utils/telecom';

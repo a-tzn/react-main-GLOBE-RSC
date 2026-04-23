@@ -22,7 +22,7 @@ import fileDark from '../../assets/fileDark.png';
 import fileLight from '../../assets/fileLight.png';
 
 import { useNavigate } from "react-router-dom";
-import { FixedSizeList as List } from 'react-window';
+import { List } from 'react-window';
 
 import DashboardLayout from '../../components/DashboardLayout';
 import DashboardHeaderActions from '../../components/common/DashboardHeaderActions';
@@ -93,14 +93,22 @@ export default function SMDashboard() {
   const [userInfo, setUserInfo] = useState(() => getCachedUserInfo());
   const [lastModifiedInfo, setLastModifiedInfo] = useState(null);
   const [persistedSummaryStats, setPersistedSummaryStats] = useState(null);
+  const [showNotificationMenu, setShowNotificationMenu] = useState(false);
+  const [notifications, setNotifications] = useState([]);
+  const [activeLoadedRecordId, setActiveLoadedRecordId] = useState(null);
+  const [pendingIncomingRecord, setPendingIncomingRecord] = useState(null);
+  const [showIncomingBanner, setShowIncomingBanner] = useState(false);
+  const [latestKnownRecordId, setLatestKnownRecordId] = useState(null);
 
   const [showPreviewMenu, setShowPreviewMenu] = useState(false);
   const [filterStatus, setFilterStatus] = useState('ALL');
 
   const [selectedSite, setSelectedSite] = useState({ lat: 7.05568, lng: 125.5469, zoom: 15 });
+  const [selectedProvince, setSelectedProvince] = useState(null);
   const [showBigMap, setShowBigMap] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [selectedRowDetails, setSelectedRowDetails] = useState(null);
+  const [isDetailsPanelOpen, setIsDetailsPanelOpen] = useState(false);
   const [mainListSize, setMainListSize] = useState({ width: '100%', height: 600 });
   const [workerFilteredIndices, setWorkerFilteredIndices] = useState([]);
   const [workerReady, setWorkerReady] = useState(false);
@@ -110,6 +118,7 @@ export default function SMDashboard() {
   const [aiCommand, setAiCommand] = useState("");
   const [showAiPanel, setShowAiPanel] = useState(false);
   const [showHistoryPanel, setShowHistoryPanel] = useState(false);
+  const [showAnalyticsPanel, setShowAnalyticsPanel] = useState(false);
 
   const [themeModal, setThemeModal] = useState({
     visible: false,
@@ -183,6 +192,105 @@ export default function SMDashboard() {
   const [loadedDataSource, setLoadedDataSource] = useState(null);
   const [isTableRevealActive, setIsTableRevealActive] = useState(false);
   const wasDatabaseSyncingRef = useRef(false);
+  const activeSidebarView = showHistoryPanel
+    ? 'history'
+    : isDetailsPanelOpen
+      ? 'details'
+      : showAnalyticsPanel
+        ? 'analytics'
+        : 'input';
+
+  const handleSidebarViewChange = (view) => {
+    if (view === 'history') {
+      setShowHistoryPanel(true);
+      setIsDetailsPanelOpen(false);
+      setShowAnalyticsPanel(false);
+      setShowAiPanel(false);
+      return;
+    }
+
+    if (view === 'analytics') {
+      setShowHistoryPanel(false);
+      setIsDetailsPanelOpen(false);
+      setShowAnalyticsPanel(true);
+      setShowAiPanel(false);
+      return;
+    }
+
+    if (view === 'details') {
+      if (!selectedRowDetails) return;
+      setShowHistoryPanel(false);
+      setIsDetailsPanelOpen(true);
+      setShowAnalyticsPanel(false);
+      setShowAiPanel(false);
+      return;
+    }
+
+    setShowHistoryPanel(false);
+    setIsDetailsPanelOpen(false);
+    setShowAnalyticsPanel(false);
+    setShowAiPanel(false);
+  };
+
+  const formatNotificationTimestamp = (value = Date.now()) =>
+    new Date(value).toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+
+  const addNotification = ({ type = 'activity', title, message, actionType = null, actionLabel = null, meta = null, read = false }) => {
+    setNotifications((prev) => {
+      const nextItem = {
+        id: `${type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        type,
+        title,
+        message,
+        actionType,
+        actionLabel,
+        meta,
+        read,
+        createdAt: Date.now(),
+        timestampLabel: formatNotificationTimestamp()
+      };
+      return [nextItem, ...prev].slice(0, 25);
+    });
+  };
+
+  const markNotificationRead = (id) => {
+    setNotifications((prev) => prev.map((item) => (item.id === id ? { ...item, read: true } : item)));
+  };
+
+  const markAllNotificationsRead = () => {
+    setNotifications((prev) => prev.map((item) => ({ ...item, read: true })));
+  };
+
+  const registerIncomingRecord = (incomingItem) => {
+    if (!incomingItem?.id) return;
+    setPendingIncomingRecord((prev) => {
+      if (prev?.id === incomingItem.id) return prev;
+      return incomingItem;
+    });
+    setShowIncomingBanner(true);
+    setNotifications((prev) => {
+      const exists = prev.some((item) => item.type === 'incoming-data' && item.meta?.recordId === incomingItem.id);
+      if (exists) return prev;
+      const nextItem = {
+        id: `incoming-${incomingItem.id}`,
+        type: 'incoming-data',
+        title: 'Incoming data available',
+        message: `${incomingItem.fileName || 'New data'} is ready to load into the table.`,
+        actionType: 'load-incoming',
+        actionLabel: 'Load now',
+        meta: { recordId: incomingItem.id, item: incomingItem },
+        read: false,
+        createdAt: Date.now(),
+        timestampLabel: formatNotificationTimestamp(incomingItem.uploadDate || Date.now())
+      };
+      return [nextItem, ...prev].slice(0, 25);
+    });
+  };
 
   const applyStoredProcessedData = (item) => {
     if (!item) return;
@@ -192,8 +300,16 @@ export default function SMDashboard() {
     setResults(safeProcessedData);
     setPersistedSummaryStats(item.metadata?.summaryStats || null);
     setFilterStatus('ALL');
+    setSelectedProvince(null);
     setSelectedRowDetails(null);
+    setIsDetailsPanelOpen(false);
+    setShowAnalyticsPanel(false);
     setShowHistoryPanel(false);
+    setActiveLoadedRecordId(item.id || null);
+    setPendingIncomingRecord((prev) => (prev?.id === item.id ? null : prev));
+    if (item.id && pendingIncomingRecord?.id === item.id) {
+      setShowIncomingBanner(false);
+    }
     
     setLoadedDataSource({
       date: new Date(item.uploadDate || Date.now()).toLocaleDateString(),
@@ -208,7 +324,8 @@ export default function SMDashboard() {
   const chatContainerRef = useRef(null);
   const sidebarTopRef = useRef(null);
   const listContainerRef = useRef(null);
-  const tableListOuterRef = useRef(null);
+  const tableListRef = useRef(null);
+  const rowSelectionRafRef = useRef(null);
   const filterWorkerRef = useRef(null);
   const filterRequestIdRef = useRef(0);
   const workerPerfRef = useRef(new Map());
@@ -246,7 +363,14 @@ export default function SMDashboard() {
     if (sidebarTopRef.current) {
       sidebarTopRef.current.scrollLeft = 0;
     }
-  }, [showHistoryPanel, selectedRowDetails]);
+  }, [showHistoryPanel, isDetailsPanelOpen]);
+
+  useEffect(() => () => {
+    if (rowSelectionRafRef.current) {
+      cancelAnimationFrame(rowSelectionRafRef.current);
+      rowSelectionRafRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     const isDatabaseSyncing = isInitialDataLoading || isStoredDataLoading || isRefreshingSavedData;
@@ -278,7 +402,7 @@ export default function SMDashboard() {
   }, [results.length]);
 
   useEffect(() => {
-    const listOuter = tableListOuterRef.current;
+    const listOuter = tableListRef.current?.element;
     if (!listOuter) {
       setTableScrollbarWidth(0);
       return undefined;
@@ -370,6 +494,7 @@ export default function SMDashboard() {
           hasFreshCache = true;
           setUserInfo(cachedMeta.userInfo || getCachedUserInfo() || null);
           setStoredData(cachedMeta.storedData || []);
+          setLatestKnownRecordId(cachedMeta.storedData?.[0]?.id || null);
           setLastModifiedInfo(cachedMeta.lastModifiedInfo || null);
           setPersistedSummaryStats(cachedMeta.persistedSummaryStats || null);
 
@@ -411,6 +536,7 @@ export default function SMDashboard() {
         if (!isMounted) return;
 
         setStoredData(storedDataList);
+        setLatestKnownRecordId((prev) => prev || storedDataList?.[0]?.id || null);
         setLastModifiedInfo(lastModified);
 
         const latestSummary = storedDataList.length > 0 ? storedDataList[0] : null;
@@ -436,7 +562,7 @@ export default function SMDashboard() {
           const fullData = await getUploadedDataById(latestSummary.id, true, 'storm-masterlist');
 
           if (isMounted && fullData) {
-            applyStoredProcessedData(fullData);
+            applyStoredProcessedData({ ...fullData, id: fullData.id || latestSummary.id });
 
             await saveDashboardCache({
               nextUserInfo: userData || getCachedUserInfo() || null,
@@ -602,6 +728,10 @@ export default function SMDashboard() {
 
     try {
       exportStormMasterlist(results, exportCategory);
+      addNotification({
+        title: 'Export completed',
+        message: `${exportCategory === 'ALL' ? 'Storm Masterlist' : exportCategory} export was generated.`
+      });
     } catch (error) {
       showThemeModal({
         title: 'Export Error',
@@ -626,7 +756,10 @@ export default function SMDashboard() {
 
     setResults([]);
     setFilterStatus('ALL');
+    setSelectedProvince(null);
     setSelectedRowDetails(null);
+    setIsDetailsPanelOpen(false);
+    setShowAnalyticsPanel(false);
     setShowAiPanel(false);
     setLoadedDataSource(null);
 
@@ -636,8 +769,15 @@ export default function SMDashboard() {
       const summaryStats = buildStormSummaryStats(safeData);
       setResults(safeData);
       setPersistedSummaryStats(summaryStats);
+      setActiveLoadedRecordId(null);
+      setPendingIncomingRecord(null);
+      setShowIncomingBanner(false);
 
       const fileNames = `${monitorFile1.name} + ${monitorFile2.name}`;
+      addNotification({
+        title: 'Scan finished',
+        message: `${fileNames} processed with ${safeData.length} results.`
+      });
 
       storeUploadedData(
         fileNames,
@@ -660,12 +800,15 @@ export default function SMDashboard() {
               getLastModifiedInfo('storm-masterlist')
             ]);
             setStoredData(updatedStoredData);
+            setLatestKnownRecordId(updatedStoredData?.[0]?.id || null);
             setLastModifiedInfo(lastModified);
+            setActiveLoadedRecordId(updatedStoredData?.[0]?.id || null);
             saveDashboardCache({
               nextUserInfo: userInfo || getCachedUserInfo() || null,
               nextStoredData: updatedStoredData,
               nextLastModifiedInfo: lastModified,
               latestStoredData: {
+                id: updatedStoredData?.[0]?.id || null,
                 processedData: safeData,
                 fileName: fileNames,
                 metadata: { summaryStats }
@@ -705,6 +848,21 @@ export default function SMDashboard() {
       ]);
       setStoredData(updatedStoredData);
       setLastModifiedInfo(lastModified);
+      const latestSummary = updatedStoredData?.[0] || null;
+      if (
+        latestSummary?.id &&
+        activeLoadedRecordId &&
+        latestKnownRecordId &&
+        latestSummary.id !== latestKnownRecordId &&
+        latestSummary.id !== activeLoadedRecordId
+      ) {
+        registerIncomingRecord(latestSummary);
+      }
+      setLatestKnownRecordId(latestSummary?.id || latestKnownRecordId);
+      addNotification({
+        title: 'Data history refreshed',
+        message: 'Latest processed records were checked from the database.'
+      });
       saveDashboardCache({
         nextUserInfo: userInfo || getCachedUserInfo() || null,
         nextStoredData: updatedStoredData,
@@ -721,12 +879,13 @@ export default function SMDashboard() {
     try {
       setIsStoredDataLoading(true);
       const fullItem = await getUploadedDataById(item.id, true, 'storm-masterlist');
-      applyStoredProcessedData(fullItem);
+      applyStoredProcessedData({ ...fullItem, id: fullItem.id || item.id });
+      setLatestKnownRecordId(storedData?.[0]?.id || item.id || null);
       saveDashboardCache({
         nextUserInfo: userInfo || getCachedUserInfo() || null,
         nextStoredData: storedData,
         nextLastModifiedInfo: lastModifiedInfo,
-        latestStoredData: fullItem,
+        latestStoredData: { ...fullItem, id: fullItem.id || item.id },
         latestPreviewData: fullItem?.metadata?.previewData || results,
         nextSummaryStats: fullItem?.metadata?.summaryStats || persistedSummaryStats
       }).catch((err) => console.warn('IndexedDB Write Failed', err));
@@ -740,6 +899,19 @@ export default function SMDashboard() {
         `Date: ${dateStr}\nTime: ${timeStr}\nRan by: ${engName}`,
         'success'
       );
+      addNotification({
+        title: 'Data loaded',
+        message: `${item.fileName || 'Stored dataset'} was loaded into the table.`
+      });
+      setNotifications((prev) => prev.map((entry) => (
+        entry.type === 'incoming-data' && entry.meta?.recordId === item.id
+          ? { ...entry, read: true }
+          : entry
+      )));
+      if (pendingIncomingRecord?.id === item.id) {
+        setPendingIncomingRecord(null);
+        setShowIncomingBanner(false);
+      }
     } catch (error) {
       console.error('Failed to load stored data:', error);
       showToast('Load Failed', 'Failed to load stored data.', 'error');
@@ -747,6 +919,58 @@ export default function SMDashboard() {
       setIsStoredDataLoading(false);
     }
   };
+
+  const handleIncomingLoadNow = async () => {
+    if (!pendingIncomingRecord) return;
+    await handleLoadStoredData(pendingIncomingRecord);
+  };
+
+  const handleNotificationAction = async (item) => {
+    if (!item) return;
+    markNotificationRead(item.id);
+    if (item.actionType === 'load-incoming' && item.meta?.item) {
+      await handleLoadStoredData(item.meta.item);
+      setShowNotificationMenu(false);
+      return;
+    }
+    if (item.actionType === 'open-history') {
+      handleSidebarViewChange('history');
+      setShowNotificationMenu(false);
+    }
+  };
+
+  useEffect(() => {
+    const latestSummary = storedData?.[0];
+    if (
+      !latestSummary?.id ||
+      !activeLoadedRecordId ||
+      !latestKnownRecordId ||
+      latestSummary.id === activeLoadedRecordId ||
+      latestSummary.id === latestKnownRecordId
+    ) return;
+    registerIncomingRecord(latestSummary);
+    setLatestKnownRecordId(latestSummary.id);
+  }, [storedData, activeLoadedRecordId, latestKnownRecordId]);
+
+  useEffect(() => {
+    if (!userInfo) return undefined;
+
+    const pollForIncomingData = async () => {
+      try {
+        const [updatedStoredData, lastModified] = await Promise.all([
+          getUserUploadedDataSummary(10, 'storm-masterlist', true),
+          getLastModifiedInfo('storm-masterlist')
+        ]);
+        setStoredData(updatedStoredData);
+        setLastModifiedInfo(lastModified);
+      } catch (error) {
+        console.warn('Background incoming data check failed:', error);
+      }
+    };
+
+    const intervalId = setInterval(pollForIncomingData, 45000);
+    return () => clearInterval(intervalId);
+  }, [userInfo]);
 
   const renderHistoryLoadingSkeleton = () => (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
@@ -881,6 +1105,86 @@ export default function SMDashboard() {
     [deferredVisibleResultIndices, results]
   );
   const mapFilteredResults = useDeferredValue(filteredResults);
+  const PROVINCE_CANONICAL_MAP = {
+    DAVAO: 'DAVAO DEL SUR',
+    'DAVAO CITY': 'DAVAO DEL SUR',
+    'DAVAO DEL SURE': 'DAVAO DEL SUR',
+    'DAVAL DEL SUR': 'DAVAO DEL SUR',
+    'TAWI TAWI': 'TAWI-TAWI',
+    'MISAMIS OR.': 'MISAMIS ORIENTAL',
+    'MISAMIS OCC.': 'MISAMIS OCCIDENTAL',
+    'NORTH COTABATO': 'COTABATO (NORTH COTABATO)',
+    COTABATO: 'COTABATO (NORTH COTABATO)',
+    'COMPOSTELA VALLEY': 'DAVAO DE ORO (COMPOSTELA VALLEY)',
+    'DAVAO DE ORO': 'DAVAO DE ORO (COMPOSTELA VALLEY)',
+    MAGUINDANAO: 'MAGUINDANAO DEL NORTE'
+  };
+  const PROVINCE_DISPLAY_MAP = {
+    'DAVAO DEL SUR': 'Davao del Sur',
+    'TAWI-TAWI': 'Tawi-Tawi',
+    'MISAMIS ORIENTAL': 'Misamis Oriental',
+    'MISAMIS OCCIDENTAL': 'Misamis Occidental',
+    'AGUSAN DEL SUR': 'Agusan del Sur',
+    'SOUTH COTABATO': 'South Cotabato',
+    'COTABATO (NORTH COTABATO)': 'Cotabato (North Cotabato)',
+    'DAVAO DE ORO (COMPOSTELA VALLEY)': 'Davao de Oro (Compostela Valley)',
+    'MAGUINDANAO DEL NORTE': 'Maguindanao del Norte'
+  };
+  const normalizeProvince = (value) => {
+    const cleaned = String(value || 'Unknown')
+      .toUpperCase()
+      .replace(/[._]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return PROVINCE_CANONICAL_MAP[cleaned] || cleaned || 'UNKNOWN';
+  };
+
+  const provinceAnalytics = useMemo(() => {
+    const provinceMap = new Map();
+    const allUniqueTowers = new Set();
+
+    filteredResults.forEach((row, rowIndex) => {
+      const provinceRaw = String(row?.prov || '').trim();
+      const provinceKey = normalizeProvince(provinceRaw || 'Unknown');
+      const provinceLabel = PROVINCE_DISPLAY_MAP[provinceKey] || provinceRaw || 'Unknown';
+      const towerKey = (row?.plaId && row.plaId !== 'NEW_SITE')
+        ? String(row.plaId)
+        : `${row?.baseLocation || row?.nmsName || 'SITE'}__${rowIndex}`;
+
+      allUniqueTowers.add(towerKey);
+      if (!provinceMap.has(provinceKey)) {
+        provinceMap.set(provinceKey, {
+          key: provinceKey,
+          province: provinceLabel,
+          towers: new Set()
+        });
+      }
+      provinceMap.get(provinceKey).towers.add(towerKey);
+    });
+
+    const totalUnique = allUniqueTowers.size || 1;
+    return Array.from(provinceMap.values())
+      .map((entry) => ({
+        key: entry.key,
+        province: entry.province,
+        towerCount: entry.towers.size,
+        share: (entry.towers.size / totalUnique) * 100
+      }))
+      .sort((a, b) => b.towerCount - a.towerCount);
+  }, [filteredResults]);
+
+  const provinceFocusedMapResults = useMemo(() => {
+    if (!selectedProvince) return mapFilteredResults;
+    const selectedKey = normalizeProvince(selectedProvince);
+    return mapFilteredResults.filter((row) => normalizeProvince(row?.prov) === selectedKey);
+  }, [mapFilteredResults, selectedProvince]);
+
+  useEffect(() => {
+    if (!selectedProvince) return;
+    const selectedKey = normalizeProvince(selectedProvince);
+    const stillAvailable = provinceAnalytics.some((item) => item.key === selectedKey);
+    if (!stillAvailable) setSelectedProvince(null);
+  }, [provinceAnalytics, selectedProvince]);
 
   const isSearchUpdating = isSearchPending || deferredSearchTerm !== debouncedTerm || isWorkerBusy || isFilterPending;
 
@@ -924,7 +1228,24 @@ export default function SMDashboard() {
     ...extraStyles
   });
 
-  const VirtualizedRow = ({ index, style }) => {
+  const groupedStripeByVisibleIndex = useMemo(() => {
+    const stripeMap = new Map();
+    let previousGroupKey = null;
+    let groupCounter = -1;
+
+    visibleResultIndices.forEach((rowIndex, visibleIndex) => {
+      const groupKey = results[rowIndex]?.baseLocation || `__row_${rowIndex}`;
+      if (visibleIndex === 0 || groupKey !== previousGroupKey) {
+        groupCounter += 1;
+        previousGroupKey = groupKey;
+      }
+      stripeMap.set(visibleIndex, groupCounter % 2);
+    });
+
+    return stripeMap;
+  }, [visibleResultIndices, results]);
+
+  const VirtualizedRow = ({ index, style, visibleResultIndices, results, selectedSite, isDarkMode, groupedStripeByVisibleIndex, showHistoryPanel }) => {
     const resultIndex = visibleResultIndices[index];
     const row = results[resultIndex];
     if (!row) return null;
@@ -950,8 +1271,13 @@ export default function SMDashboard() {
       fontSize: '0.9rem'
     };
 
-    if (isExactRow) rowStyle.backgroundColor = 'rgba(0, 123, 255, 0.2)';
-    else if (isSameGroup) rowStyle.backgroundColor = 'rgba(128, 128, 128, 0.15)';
+    const stripeIndex = groupedStripeByVisibleIndex.get(index) ?? 0;
+    rowStyle.backgroundColor = stripeIndex === 0
+      ? (isDarkMode ? 'rgba(255, 255, 255, 0.018)' : 'rgba(15, 23, 42, 0.018)')
+      : (isDarkMode ? 'rgba(148, 163, 184, 0.075)' : 'rgba(15, 23, 42, 0.05)');
+
+    if (isExactRow) rowStyle.backgroundColor = isDarkMode ? 'rgba(56, 189, 248, 0.22)' : 'rgba(59, 130, 246, 0.14)';
+    else if (isSameGroup) rowStyle.backgroundColor = isDarkMode ? 'rgba(148, 163, 184, 0.16)' : 'rgba(100, 116, 139, 0.13)';
 
     return (
       <div
@@ -960,8 +1286,29 @@ export default function SMDashboard() {
         onClick={() => {
           const lat = parseFloat(row.lat);
           const lng = parseFloat(row.lng);
-          setSelectedSite({ lat, lng, id: row.plaId, baseLocation: row.baseLocation, nmsName: row.nmsName, zoom: 18 });
-          setSelectedRowDetails(row);
+          const nextSite = { lat, lng, id: row.plaId, baseLocation: row.baseLocation, nmsName: row.nmsName, zoom: 18 };
+
+          setSelectedRowDetails((prev) => (prev === row ? prev : row));
+          setSelectedProvince(null);
+          setIsDetailsPanelOpen(true);
+          setShowAnalyticsPanel(false);
+          if (showHistoryPanel) setShowHistoryPanel(false);
+
+          if (rowSelectionRafRef.current) {
+            cancelAnimationFrame(rowSelectionRafRef.current);
+          }
+          rowSelectionRafRef.current = requestAnimationFrame(() => {
+            setSelectedSite((prev) => {
+              const sameId = prev?.id === nextSite.id;
+              const sameName = prev?.nmsName === nextSite.nmsName;
+              const sameLat = Number(prev?.lat) === Number(nextSite.lat);
+              const sameLng = Number(prev?.lng) === Number(nextSite.lng);
+              const sameZoom = Number(prev?.zoom) === Number(nextSite.zoom);
+              if (sameId && sameName && sameLat && sameLng && sameZoom) return prev;
+              return nextSite;
+            });
+            rowSelectionRafRef.current = null;
+          });
         }}
       >
         <div style={getTableColumnStyle({ fontWeight: 'bold' })}>
@@ -1009,6 +1356,7 @@ export default function SMDashboard() {
   const lastModifiedTimestamp = lastModifiedInfo?.timestamp
     ? new Date(lastModifiedInfo.timestamp).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
     : "No previous sync";
+  const notificationUnreadCount = notifications.filter((item) => !item.read).length;
 
   const myProcessedData = storedData
     ? storedData.filter(
@@ -1030,14 +1378,33 @@ const headerActions = (
     lastModifiedText={lastModifiedName ? `${lastModifiedTimestamp} | ${lastModifiedName}` : lastModifiedTimestamp}
     exportDisabled={results?.length === 0}
     showExportMenu={showExportMenu}
-    onToggleExport={() => setShowExportMenu(!showExportMenu)}
+    onToggleExport={() => {
+      setShowNotificationMenu(false);
+      setShowExportMenu(!showExportMenu);
+    }}
     onCloseExport={() => setShowExportMenu(false)}
     exportOptions={exportOptions}
     onSelectExport={(value) => handleSpecificExport(value)}
     isDarkMode={isDarkMode}
     onToggleTheme={toggleTheme}
+    showNotificationMenu={showNotificationMenu}
+    onToggleNotification={() => {
+      setShowExportMenu(false);
+      setShowNotificationMenu((prev) => {
+        const nextValue = !prev;
+        if (nextValue) markAllNotificationsRead();
+        return nextValue;
+      });
+    }}
+    onCloseNotification={() => setShowNotificationMenu(false)}
+    notifications={notifications}
+    notificationUnreadCount={notificationUnreadCount}
+    onNotificationAction={handleNotificationAction}
     showUserDropdown={showUserDropdown}
-    onToggleUserDropdown={() => setShowUserDropdown(!showUserDropdown)}
+    onToggleUserDropdown={() => {
+      setShowNotificationMenu(false);
+      setShowUserDropdown(!showUserDropdown);
+    }}
     onCloseUserDropdown={() => setShowUserDropdown(false)}
     userName={engineerName}
     userEmail={currentUserEmail}
@@ -1058,10 +1425,40 @@ const headerActions = (
       <main className="main-layout">
         
         <aside className="sidebar" style={{ width: '320px', minWidth: '320px', flexShrink: 0 }}>
+          <div className="sa-sidebar-tabs-wrap">
+            <div className="sa-sidebar-tabs">
+              <button
+                className={`sa-sidebar-tab-btn ${activeSidebarView === 'input' ? 'active' : ''}`}
+                onClick={() => handleSidebarViewChange('input')}
+              >
+                Input
+              </button>
+              <button
+                className={`sa-sidebar-tab-btn ${activeSidebarView === 'analytics' ? 'active' : ''}`}
+                onClick={() => handleSidebarViewChange('analytics')}
+                disabled={provinceAnalytics.length === 0}
+              >
+                Analytics
+              </button>
+              <button
+                className={`sa-sidebar-tab-btn ${activeSidebarView === 'details' ? 'active' : ''}`}
+                onClick={() => handleSidebarViewChange('details')}
+                disabled={!selectedRowDetails}
+              >
+                Details
+              </button>
+              <button
+                className={`sa-sidebar-tab-btn ${activeSidebarView === 'history' ? 'active' : ''}`}
+                onClick={() => handleSidebarViewChange('history')}
+              >
+                History
+              </button>
+            </div>
+          </div>
           
           <div className="sidebar-top-section" ref={sidebarTopRef} style={{ width: '100%', flex: showHistoryPanel ? '1' : '1', display: 'flex', flexDirection: 'column' }}>
             
-            <div className={`sidebar-carousel ${showHistoryPanel ? 'show-history' : (selectedRowDetails ? 'show-details' : '')}`} style={{ flex: 1 }}>
+            <div className={`sidebar-carousel ${showHistoryPanel ? 'show-history' : (isDetailsPanelOpen ? 'show-details' : (showAnalyticsPanel ? 'show-analytics' : ''))}`} style={{ flex: 1 }}>
               
               <div className="carousel-panel" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
                 <h3 style={{ marginTop: 0, marginBottom: '15px', fontSize: '1.1rem' }}>Data Input</h3>
@@ -1092,10 +1489,72 @@ const headerActions = (
               </div>
 
               <div className="carousel-panel">
-                <div className="details-header">
-                  <button className="back-btn" onClick={() => setSelectedRowDetails(null)}>
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
-                  </button>
+                <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                    <h3 style={{ margin: 0, fontSize: '1.1rem', color: 'var(--text-primary)' }}>Province Towers</h3>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedProvince(null)}
+                      disabled={!selectedProvince}
+                      style={{
+                        border: '1px solid var(--border-light)',
+                        background: 'var(--bg-primary)',
+                        color: 'var(--text-secondary)',
+                        borderRadius: '999px',
+                        fontSize: '0.72rem',
+                        fontWeight: 600,
+                        padding: '3px 10px',
+                        cursor: selectedProvince ? 'pointer' : 'not-allowed',
+                        opacity: selectedProvince ? 1 : 0.5
+                      }}
+                    >
+                      Clear
+                    </button>
+                  </div>
+                  <div style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', marginBottom: '10px' }}>
+                    Click a province to focus map + counts.
+                  </div>
+                  <div className="custom-scrollbar" style={{ display: 'flex', flexDirection: 'column', gap: '8px', overflowY: 'auto', overflowX: 'hidden' }}>
+                    {provinceAnalytics.length > 0 ? provinceAnalytics.map((entry) => {
+                      const isActive = selectedProvince && normalizeProvince(selectedProvince) === entry.key;
+                      return (
+                        <button
+                          key={`sm-sidebar-province-chip-${entry.key}`}
+                          type="button"
+                          onClick={() => {
+                            const nextProvince = isActive ? null : entry.province;
+                            setSelectedProvince(nextProvince);
+                            setSelectedSite({ lat: '', lng: '', zoom: 10 });
+                          }}
+                          style={{
+                            border: isActive ? '1px solid var(--brand-purple)' : '1px solid var(--border-light)',
+                            background: isActive ? 'rgba(26, 115, 232, 0.12)' : 'var(--bg-primary)',
+                            color: 'var(--text-primary)',
+                            borderRadius: '10px',
+                            padding: '10px',
+                            cursor: 'pointer',
+                            textAlign: 'left',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '3px'
+                          }}
+                          title={`${entry.towerCount} unique towers in ${entry.province}`}
+                        >
+                          <span style={{ fontSize: '0.8rem', fontWeight: 700 }}>{entry.province}</span>
+                          <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
+                            {entry.towerCount} towers · {entry.share.toFixed(1)}%
+                          </span>
+                        </button>
+                      );
+                    }) : (
+                      <div style={{ color: 'var(--text-secondary)', fontSize: '0.82rem' }}>No province data yet.</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="carousel-panel">
+                <div style={{ display: 'flex', alignItems: 'center', marginBottom: '15px' }}>
                   <h3 style={{ margin: 0, fontSize: '1.2rem' }}>Site Details</h3>
                 </div>
                 
@@ -1108,7 +1567,7 @@ const headerActions = (
                       </div>
                     </div>
                     <div>
-                      <span className="input-label">Status</span>
+                      <span className="input-label">Status:</span>
                       <div style={{ marginTop: '6px' }}>
                         <span className={`status-badge ${(selectedRowDetails?.matchStatus || 'UNCHANGED').toLowerCase()}`}>
                           {selectedRowDetails?.matchStatus || 'UNCHANGED'}
@@ -1158,7 +1617,7 @@ const headerActions = (
                     </div>
                   )}
 
-                  <div className="custom-scrollbar" style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden'}}>
+                  <div className="custom-scrollbar sm-history-scroll" style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
                     {isStoredDataLoading ? (
                       renderHistoryLoadingSkeleton()
                     ) : storedData.length > 0 ? (
@@ -1182,10 +1641,10 @@ const headerActions = (
                             </div>
 
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                              <div style={{ fontSize: '0.8rem', color: 'var(--color-info)' }}>
+                              <div style={{ fontSize: '0.7rem', color: 'var(--color-info)' }}>
                                 {item.dataType} • {item.processedCount ?? item.metadata?.processedRecords ?? 0} results
                               </div>
-                              <div style={{ fontSize: '0.7rem', color: 'var(--bg-primary)', background: 'var(--text-primary)', fontWeight: 'bold', padding: '4px 10px', borderRadius: '12px' }}>
+                              <div style={{ fontSize: '0.7rem', color: 'var(--bg-primary)', background: 'var(--text-primary)', fontWeight: 'bold', padding: '3px 7px', borderRadius: '12px' }}>
                                 Load Data
                               </div>
                             </div>
@@ -1305,7 +1764,7 @@ const headerActions = (
               </div>
 
               {!showHistoryPanel && (
-                <MapVisualizer selectedSite={selectedSite} filteredResults={mapFilteredResults} isExpanded={false} />
+                <MapVisualizer selectedSite={selectedSite} selectedProvince={selectedProvince} filteredResults={provinceFocusedMapResults} isExpanded={false} />
               )}
             </div>
           </div>
@@ -1313,21 +1772,6 @@ const headerActions = (
         </aside>
 
         <section className="content-area">
-
-          <div 
-            className={`history-side-tab ${showHistoryPanel ? 'active' : ''}`}
-            onClick={() => {
-              setShowHistoryPanel(!showHistoryPanel);
-              if (!showHistoryPanel) {
-                setSelectedRowDetails(null);
-                setShowAiPanel(false);
-              }
-            }}
-          >
-            <span style={{ fontSize: '0.7rem', transform: 'rotate(90deg)' }}>[📁]</span>
-            <span className="history-tab-text">{showHistoryPanel ? "CLOSE" : "HISTORY"}</span>
-          </div>
-
           <div 
             className={`ai-side-tab ${showAiPanel ? 'active' : ''}`}
             style={{ display: 'none' }}
@@ -1335,6 +1779,7 @@ const headerActions = (
               setShowAiPanel(!showAiPanel);
               if (!showAiPanel) {
                 setSelectedRowDetails(null);
+                setIsDetailsPanelOpen(false);
                 setShowHistoryPanel(false);
               }
             }}
@@ -1557,6 +2002,92 @@ const headerActions = (
               </div>
             </div>
                       <div className="output-box" style={{ flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: 'var(--bg-primary)' }}>
+                        {pendingIncomingRecord && showIncomingBanner && (
+                          <div
+                            style={{
+                              margin: '14px 14px 0 14px',
+                              padding: '14px 16px',
+                              borderRadius: '16px',
+                              border: isDarkMode ? '1px solid rgba(56, 189, 248, 0.25)' : '1px solid rgba(2, 132, 199, 0.18)',
+                              background: isDarkMode
+                                ? 'linear-gradient(135deg, rgba(8, 47, 73, 0.92), rgba(17, 28, 68, 0.96))'
+                                : 'linear-gradient(135deg, rgba(240, 249, 255, 0.98), rgba(239, 246, 255, 0.96))',
+                              boxShadow: isDarkMode
+                                ? '0 10px 30px rgba(2, 132, 199, 0.12)'
+                                : '0 10px 24px rgba(14, 116, 144, 0.08)'
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '14px', flexWrap: 'wrap' }}>
+                              <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', minWidth: 0, flex: '1 1 320px' }}>
+                                <div
+                                  style={{
+                                    width: '34px',
+                                    height: '34px',
+                                    borderRadius: '12px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    background: isDarkMode ? 'rgba(56, 189, 248, 0.16)' : 'rgba(2, 132, 199, 0.1)',
+                                    color: isDarkMode ? '#7dd3fc' : '#0369a1',
+                                    flexShrink: 0
+                                  }}
+                                >
+                                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round">
+                                    <path d="M12 3v12" />
+                                    <path d="m7 10 5 5 5-5" />
+                                    <path d="M5 21h14" />
+                                  </svg>
+                                </div>
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={{ fontSize: '0.92rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                                    New processed data is available
+                                  </div>
+                                  <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '4px', lineHeight: 1.45 }}>
+                                    <span style={{ color: 'var(--brand-purple)', fontWeight: 700 }}>{pendingIncomingRecord.fileName || 'Latest upload'}</span>
+                                    {' '}was added by{' '}
+                                    <span style={{ color: 'var(--text-primary)', fontWeight: 700 }}>{pendingIncomingRecord.metadata?.engineerName || pendingIncomingRecord.userName || 'another user'}</span>.
+                                    {' '}Load it now, or keep working and return to it from notifications later.
+                                  </div>
+                                </div>
+                              </div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                                <button
+                                  type="button"
+                                  className="primary-outline"
+                                  onClick={() => {
+                                    setShowIncomingBanner(false);
+                                    addNotification({
+                                      title: 'Incoming data saved for later',
+                                      message: 'You can load the latest dataset anytime from the notification panel.',
+                                      actionType: 'open-history',
+                                      actionLabel: 'Open history'
+                                    });
+                                  }}
+                                  style={{ borderRadius: '999px', padding: '8px 14px', outline: 'none' }}
+                                >
+                                  Later
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={handleIncomingLoadNow}
+                                  style={{
+                                    border: 'none',
+                                    borderRadius: '999px',
+                                    padding: '9px 16px',
+                                    background: 'var(--brand-gradient)',
+                                    color: '#fff',
+                                    fontWeight: 700,
+                                    cursor: 'pointer',
+                                    boxShadow: '0 10px 22px rgba(37, 99, 235, 0.18)',
+                                    outline: 'none'
+                                  }}
+                                >
+                                  Update table
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        )}
                         <div className="table-wrapper" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                           <div style={{ ...TABLE_GRID_STYLE, paddingTop: '16px', paddingBottom: '16px', paddingLeft: '20px', paddingRight: `${20 + tableScrollbarWidth}px`, fontWeight: 600, borderBottom: isDarkMode ? '1px solid rgba(255, 255, 255, 0.08)' : '1px solid rgba(15, 23, 42, 0.18)', background: isDarkMode ? 'linear-gradient(180deg, rgba(17, 28, 68, 0.95) 0%, rgba(17, 28, 68, 0.85) 100%)' : 'linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(255, 255, 255, 0.75) 100%)', color: 'var(--text-secondary)', textTransform: 'uppercase', fontSize: '0.85rem', boxSizing: 'border-box' }}>
                             <div style={getTableColumnStyle()}>PLA_ID</div>
@@ -1590,16 +2121,15 @@ const headerActions = (
                           return (
                             <div className={isTableRevealActive ? 'table-content-reveal' : ''} style={{ position: 'relative', width: '100%', height: '100%' }}>
                               <List 
-                                height={mainListSize.height} 
-                                itemCount={visibleResultIndices.length} 
-                                itemSize={58} // SM Dashboard uses 58px rows
-                                width={mainListSize.width} 
+                                rowCount={visibleResultIndices.length} 
+                                rowHeight={58}
+                                style={{ height: mainListSize.height, width: mainListSize.width }}
                                 overscanCount={10} 
-                                outerRef={tableListOuterRef}
+                                listRef={tableListRef}
                                 className="custom-scrollbar sm-table-scroll"
-                              >
-                                {VirtualizedRow}
-                              </List>
+                                rowComponent={VirtualizedRow}
+                                rowProps={{ visibleResultIndices, results, selectedSite, isDarkMode, groupedStripeByVisibleIndex, showHistoryPanel }}
+                              />
                               {showOverlaySkeleton && (
                                 <div
                                   className={`table-skeleton-overlay ${isTableRevealActive && !isDatabaseSyncing ? 'fade-out' : ''}`}
@@ -1734,8 +2264,59 @@ const headerActions = (
                         <h3>Site Location: {selectedSite.baseLocation || "Region Map"}</h3>
                         <button className="close-btn" onClick={() => setShowBigMap(false)}> Close</button>
                       </div>
+                      <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border-light)', background: 'var(--bg-input)', display: 'flex', gap: '8px', alignItems: 'center' }}>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedProvince(null)}
+                          disabled={!selectedProvince}
+                          style={{
+                            border: '1px solid var(--border-light)',
+                            background: 'var(--bg-primary)',
+                            color: 'var(--text-secondary)',
+                            borderRadius: '999px',
+                            fontSize: '0.72rem',
+                            fontWeight: 600,
+                            padding: '4px 10px',
+                            cursor: selectedProvince ? 'pointer' : 'not-allowed',
+                            opacity: selectedProvince ? 1 : 0.5,
+                            flexShrink: 0
+                          }}
+                        >
+                          Clear
+                        </button>
+                        <div className="custom-scrollbar" style={{ display: 'flex', gap: '8px', overflowX: 'auto', paddingBottom: '2px' }}>
+                          {provinceAnalytics.slice(0, 20).map((entry) => {
+                            const isActive = selectedProvince && normalizeProvince(selectedProvince) === entry.key;
+                            return (
+                              <button
+                                key={`sm-map-province-chip-${entry.key}`}
+                                type="button"
+                                onClick={() => {
+                                  const nextProvince = isActive ? null : entry.province;
+                                  setSelectedProvince(nextProvince);
+                                  setSelectedSite({ lat: '', lng: '', zoom: 10 });
+                                }}
+                                style={{
+                                  border: isActive ? '1px solid var(--brand-purple)' : '1px solid var(--border-light)',
+                                  background: isActive ? 'rgba(26, 115, 232, 0.12)' : 'var(--bg-primary)',
+                                  color: 'var(--text-primary)',
+                                  borderRadius: '999px',
+                                  padding: '4px 10px',
+                                  cursor: 'pointer',
+                                  fontSize: '0.72rem',
+                                  whiteSpace: 'nowrap',
+                                  flexShrink: 0
+                                }}
+                                title={`${entry.towerCount} unique towers in ${entry.province}`}
+                              >
+                                {entry.province} ({entry.towerCount})
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
                       <div className="big-map-wrapper">
-                        <MapVisualizer selectedSite={selectedSite} filteredResults={mapFilteredResults} isExpanded={true} />
+                        <MapVisualizer selectedSite={selectedSite} selectedProvince={selectedProvince} filteredResults={provinceFocusedMapResults} isExpanded={true} />
                       </div>
                     </div>
                   </div>
@@ -1765,3 +2346,4 @@ const headerActions = (
               </DashboardLayout>
             );
           }
+

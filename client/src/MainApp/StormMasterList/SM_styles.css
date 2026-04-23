@@ -91,8 +91,9 @@ body.dark-mode .top-bar {
   will-change: transform;
 }
 
-.sidebar-carousel.show-details { transform: translateX(-25%); }
-.sidebar-carousel.show-history { transform: translateX(-50%); }
+.sidebar-carousel.show-analytics { transform: translateX(-25%); }
+.sidebar-carousel.show-details { transform: translateX(-50%); }
+.sidebar-carousel.show-history { transform: translateX(-75%); }
 .sidebar-carousel.show-ai { transform: translateX(-75%); }
 
 .carousel-panel { 
@@ -1793,6 +1794,11 @@ body.dark-mode .map-modal-header {
 
 /* Keep Storm Master table body aligned with header (no left gutter reservation). */
 .sm-table-scroll {
+  scrollbar-gutter: stable !important;
+}
+
+/* Keep history list aligned with info cards (no left scrollbar gutter). */
+.sm-history-scroll {
   scrollbar-gutter: stable !important;
 }
 

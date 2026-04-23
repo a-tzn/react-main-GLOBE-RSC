@@ -281,15 +281,26 @@ export function processCSVComparison(nmsText, udmText) {
     for (var udmKey in udmTable) {
       if (!matchedUdmKeys.has(udmKey)) {
         var u = udmTable[udmKey];
+        var removedParsed = extractBaseAndSuffix(u.originalName);
         var forceUnique = u.isGhostSite || u.isDuplicate;
-        var uniqueDisplayBase = forceUnique ? u.originalName + ' (' + u.plaId + ')' : extractBaseAndSuffix(u.originalName).displayBase;
+        var uniqueDisplayBase = forceUnique ? u.originalName + ' (' + u.plaId + ')' : removedParsed.displayBase;
+        
+        var baseGen = '2G';
+        var str = removedParsed.suffix.toUpperCase();
+        if (/[FLWYHV]/.test(str)) {
+          baseGen = '4G';
+        } else if (/[MPN]/.test(str)) {
+          baseGen = '5G';
+        }
+
+        var specificTechLabel = generateSpecificTechLabel(baseGen, removedParsed.suffix);
 
         report.push({
           plaId: u.plaId,
           matchStatus: 'REMOVED',
           techName: forceUnique ? uniqueDisplayBase : u.originalName,
           baseLocation: uniqueDisplayBase,
-          techGen: 'UDM Only',
+          techGen: specificTechLabel,
           nmsName: forceUnique ? uniqueDisplayBase : u.originalName,
           lat: u.lat,
           lng: u.lng,

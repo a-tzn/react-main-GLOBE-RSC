@@ -5,26 +5,26 @@
  */
 
 import React, { useMemo } from 'react';
-import { FixedSizeList as List } from 'react-window';
+import { List } from 'react-window';
 
 /**
  * Row renderer wrapper - handles dark mode via CSS variables
  */
-const Row = ({ index, style, data }) => {
-  const rowData = data.rows[index];
+const Row = ({ index, style, rows, renderRow, onRowClick }) => {
+  const rowData = rows[index];
 
   return (
     <div
       style={style}
       className="virtualized-row"
-      onClick={() => data.onRowClick?.(rowData, index)}
+      onClick={() => onRowClick?.(rowData, index)}
       role="button"
       tabIndex={0}
       onKeyDown={(e) => {
-        if (e.key === 'Enter') data.onRowClick?.(rowData, index);
+        if (e.key === 'Enter') onRowClick?.(rowData, index);
       }}
     >
-      {data.renderRow(rowData, index)}
+      {renderRow(rowData, index)}
     </div>
   );
 };
@@ -53,7 +53,7 @@ export function VirtualizedTable({
 }) {
   const itemCount = rows.length;
 
-  const itemData = useMemo(
+  const rowProps = useMemo(
     () => ({
       rows,
       renderRow,
@@ -84,15 +84,13 @@ export function VirtualizedTable({
   return (
     <div className={`virtualized-table-container ${className}`}>
       <List
-        height={height}
-        itemCount={itemCount}
-        itemSize={itemSize}
-        width={width}
-        itemData={itemData}
+        rowCount={itemCount}
+        rowHeight={itemSize}
+        rowComponent={Row}
+        rowProps={rowProps}
+        style={{ height, width }}
         overscanCount={overscanCount}
-      >
-        {Row}
-      </List>
+      />
     </div>
   );
 }

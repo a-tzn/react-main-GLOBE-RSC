@@ -4,7 +4,7 @@
  * Manages column widths, formatting, and multiple sheet support
  */
 
-import * as XLSX from 'xlsx';
+import * as XLSX from '@e965/xlsx';
 
 /**
  * Generate column widths based on content

@@ -19,7 +19,13 @@ export function DashboardHeaderActions({
   userInitial = 'U',
   firstName = 'USER',
   recentItems = [],
-  onLoadRecentItem
+  onLoadRecentItem,
+  showNotificationMenu = false,
+  onToggleNotification,
+  onCloseNotification,
+  notifications = [],
+  notificationUnreadCount = 0,
+  onNotificationAction
 }) {
   const { ping, status } = useNetworkPing();
   const pingColor = status === 'good' ? '#28a745' : status === 'fair' ? '#f59e0b' : '#ef4444';
@@ -36,10 +42,10 @@ export function DashboardHeaderActions({
         </span>
       </div>
 
+
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 0, flex: 1 }} />
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-        <div
+              <div
           title={status === 'offline' ? 'Connection appears offline' : `Network latency: ${ping}ms`}
           style={{
             display: 'flex',
@@ -64,6 +70,7 @@ export function DashboardHeaderActions({
           <span style={{ lineHeight: 1 }}>{pingText}</span>
         </div>
 
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
         <div className="export-dropdown-container" onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) onCloseExport?.(); }} tabIndex={-1} style={{ position: 'relative' }}>
           <button className="btn theme-toggle" onClick={onToggleExport} disabled={exportDisabled} style={{
             width: '36px', height: '36px', borderRadius: '50%', padding: 0,
@@ -79,7 +86,7 @@ export function DashboardHeaderActions({
             </svg>
           </button>
           {showExportMenu && (
-            <div className="export-menu" style={{ position: 'absolute', top: '110%', left: 0, zIndex: 50 }}>
+            <div className="export-menu" style={{ position: 'absolute', top: '110%', left: 0, zIndex: 50, marginTop: '20px' }}>
               {exportOptions.map((option) => (
                 <button key={option.value} onClick={() => onSelectExport?.(option.value)}>
                   {option.label}
@@ -88,6 +95,118 @@ export function DashboardHeaderActions({
             </div>
           )}
         </div>
+
+        {(onToggleNotification || notifications.length > 0 || notificationUnreadCount > 0) && (
+          <div
+            className="export-dropdown-container"
+            onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) onCloseNotification?.(); }}
+            tabIndex={-1}
+            style={{ position: 'relative' }}
+          >
+            <button
+              className="btn theme-toggle"
+              onClick={onToggleNotification}
+              title="Notifications"
+              style={{
+                width: '36px',
+                height: '36px',
+                borderRadius: '50%',
+                padding: 0,
+                background: 'var(--bg-input)',
+                border: '1px solid var(--border-light)',
+                color: 'var(--text-primary)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                transition: 'all 0.2s ease',
+                outline: 'none',
+                position: 'relative'
+              }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M15 17h5l-1.4-1.4a2 2 0 0 1-.6-1.4V11a6 6 0 1 0-12 0v3.2a2 2 0 0 1-.6 1.4L4 17h5" />
+                <path d="M9.5 17a2.5 2.5 0 0 0 5 0" />
+              </svg>
+              {notificationUnreadCount > 0 && (
+                <span
+                  style={{
+                    position: 'absolute',
+                    top: '-2px',
+                    right: '-2px',
+                    minWidth: '16px',
+                    height: '16px',
+                    borderRadius: '999px',
+                    background: 'var(--color-danger)',
+                    color: '#fff',
+                    fontSize: '0.62rem',
+                    fontWeight: 700,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    padding: '0 4px',
+                    boxShadow: '0 0 0 2px var(--bg-sidebar)'
+                  }}
+                >
+                  {notificationUnreadCount > 9 ? '9+' : notificationUnreadCount}
+                </span>
+              )}
+            </button>
+            {showNotificationMenu && (
+              <div
+                style={{
+                  marginTop: '20px',
+                  position: 'absolute',
+                  top: '110%',
+                  left: 0,
+                  zIndex: 60,
+                  width: '303px',
+                  maxHeight: '360px',
+                  overflowY: 'auto',
+                  borderRadius: '12px',
+                  border: '1px solid var(--border-light)',
+                  background: 'var(--bg-card)',
+                  boxShadow: 'var(--shadow-hover)',
+                  backdropFilter: 'var(--glass-blur)',
+                  WebkitBackdropFilter: 'var(--glass-blur)'
+                }}
+              >
+                <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--border-light)', fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-primary)', position: 'sticky', top: 0, background: 'var(--glass-blur)', zIndex: 1 }}>
+                  Notifications
+                </div>
+                {notifications.length === 0 ? (
+                  <div style={{ padding: '14px', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                    No recent notifications.
+                  </div>
+                ) : notifications.map((item) => (
+                  <div key={item.id} style={{ padding: '11px 14px', borderBottom: '1px solid var(--border-light)', background: item.read ? 'transparent' : (isDarkMode ? 'rgba(26, 115, 232, 0.1)' : 'rgba(26, 115, 232, 0.08)') }}>
+                    <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '10px' }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: '0.76rem', fontWeight: 700, color: 'var(--text-primary)' }}>{item.title}</div>
+                        <div style={{ fontSize: '0.73rem', marginTop: '3px', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>{item.message}</div>
+                        <div style={{ fontSize: '0.68rem', marginTop: '5px', color: 'var(--text-secondary)' }}>{item.timestampLabel}</div>
+                      </div>
+                      {!item.read && <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--color-info)', boxShadow: '0 0 8px var(--color-info)', marginTop: '6px' }} />}
+                    </div>
+                    {item.actionType && (
+                      <div style={{ marginTop: '8px', display: 'flex', justifyContent: 'flex-end' }}>
+                        <button
+                          type="button"
+                          className="primary-outline"
+                          onClick={() => onNotificationAction?.(item)}
+                          style={{ fontSize: '0.68rem', padding: '4px 10px', borderRadius: '999px', outline: 'none' }}
+                        >
+                          {item.actionLabel || 'Open'}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
 
         <button className="btn theme-toggle" onClick={onToggleTheme} title="Toggle Theme" style={{
           width: '36px', height: '36px', borderRadius: '50%', padding: 0,
@@ -132,15 +251,18 @@ export function DashboardHeaderActions({
             </div>
           </button>
 
+          
+
           {showUserDropdown && (
             <>
-              <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 999 }} onClick={(e) => { e.stopPropagation(); onCloseUserDropdown?.(); }} />
+              <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 999}} onClick={(e) => { e.stopPropagation(); onCloseUserDropdown?.(); }} />
 
               <div style={{
                 position: 'absolute', top: '110%', right: 0, zIndex: 1000, width: '360px',
                 background: 'var(--bg-card)', backdropFilter: 'var(--glass-blur)', WebkitBackdropFilter: 'var(--glass-blur)',
                 border: '1px solid var(--border-light)', borderRadius: '24px', boxShadow: 'var(--shadow-hover)',
-                padding: '16px', color: 'var(--text-primary)', fontFamily: '"Google Sans", Roboto, Arial, sans-serif'
+                padding: '16px', color: 'var(--text-primary)', fontFamily: '"Google Sans", Roboto, Arial, sans-serif',
+                marginTop: '19px'
               }}>
                 <div style={{ position: 'relative', textAlign: 'center', marginBottom: '16px' }}>
                   <div style={{ fontSize: '0.85rem', color: 'var(--text-primary)', fontWeight: '500' }}>{userEmail}</div>

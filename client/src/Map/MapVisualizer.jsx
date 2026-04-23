@@ -1,9 +1,10 @@
 import { memo, useDeferredValue, useEffect, useMemo } from 'react';
-import { MapContainer, TileLayer, WMSTileLayer, Marker, Popup, Tooltip, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, WMSTileLayer, Marker, Popup, Tooltip, Rectangle, GeoJSON, useMap } from 'react-leaflet';
 import MarkerClusterGroup from 'react-leaflet-cluster';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import globeIcon from '../assets/globeIcon.png';
+import mindanaoAdm2Raw from '../assets/mindanao_adm2_simplified.geojson?raw';
 
 // Fix default marker icons
 delete L.Icon.Default.prototype._getIconUrl;
@@ -230,7 +231,7 @@ const createCustomClusterIcon = (cluster) => {
 };
 
 // 🔁 Map recenter logic (unchanged)
-function MapRecenter({ expanded, processedData = [], selectedSite = {} }) {
+function MapRecenter({ expanded, processedData = [], selectedSite = {}, provinceBounds = null }) {
   const map = useMap();
 
   const bounds = useMemo(() => {
@@ -247,17 +248,54 @@ function MapRecenter({ expanded, processedData = [], selectedSite = {} }) {
     map.invalidateSize();
     if (selectedSite.lat && selectedSite.lng) {
       map.flyTo([parseFloat(selectedSite.lat), parseFloat(selectedSite.lng)], 18, { animate: true, duration: 1 });
+    } else if (provinceBounds) {
+      map.fitBounds(provinceBounds, { padding: [70, 70] });
     } else if (bounds) {
       map.fitBounds(bounds, { padding: [60, 60] });
     }
-  }, [selectedSite.lat, selectedSite.lng, bounds, expanded, map]);
+  }, [selectedSite.lat, selectedSite.lng, bounds, provinceBounds, expanded, map]);
 
   return null;
 }
 
+const PROVINCE_ALIASES = {
+  DAVAO: 'DAVAO DEL SUR',
+  'DAVAO CITY': 'DAVAO DEL SUR',
+  'DAVAO DEL SURE': 'DAVAO DEL SUR',
+  'DAVAL DEL SUR': 'DAVAO DEL SUR',
+  'TAWI TAWI': 'TAWI-TAWI',
+  'MISAMIS OR.': 'MISAMIS ORIENTAL',
+  'MISAMIS OCC.': 'MISAMIS OCCIDENTAL',
+  'NORTH COTABATO': 'COTABATO (NORTH COTABATO)',
+  COTABATO: 'COTABATO (NORTH COTABATO)',
+  COMPOSTELA: 'DAVAO DE ORO (COMPOSTELA VALLEY)',
+  'COMPOSTELA VALLEY': 'DAVAO DE ORO (COMPOSTELA VALLEY)',
+  'DAVAO DE ORO': 'DAVAO DE ORO (COMPOSTELA VALLEY)',
+  MAGUINDANAO: 'MAGUINDANAO DEL NORTE'
+};
+const normalizeProvinceName = (value) => {
+  const cleaned = String(value || '')
+    .toUpperCase()
+    .replace(/[._]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return PROVINCE_ALIASES[cleaned] || cleaned;
+};
+
 // 🔥 MAIN COMPONENT
-function MapVisualizer({ selectedSite = {}, filteredResults = [], isExpanded = false }) {
+function MapVisualizer({ selectedSite = {}, selectedProvince = null, filteredResults = [], isExpanded = false }) {
   const deferredFilteredResults = useDeferredValue(filteredResults);
+  const mindanaoFeatureCollection = useMemo(() => {
+    try {
+      const parsed = JSON.parse(mindanaoAdm2Raw);
+      if (parsed?.type === 'FeatureCollection' && Array.isArray(parsed.features)) {
+        return parsed;
+      }
+    } catch {
+      // ignore malformed json
+    }
+    return null;
+  }, []);
 
   const processedData = useMemo(() => {
     const idMap = {};
@@ -286,6 +324,40 @@ function MapVisualizer({ selectedSite = {}, filteredResults = [], isExpanded = f
   }, [selectedSite.lat, selectedSite.lng, processedData]);
 
   const currentZoom = selectedSite.lat ? 18 : (isExpanded ? 15 : 10);
+  const provinceOutlineGeoJson = useMemo(() => {
+    if (!selectedProvince || !mindanaoFeatureCollection) return null;
+    const selectedKey = normalizeProvinceName(selectedProvince);
+    let matchedFeature = mindanaoFeatureCollection.features.find((feature) => {
+      const provinceName = feature?.properties?.ADM2_EN || feature?.properties?.province || feature?.properties?.name;
+      const normalizedFeature = normalizeProvinceName(provinceName);
+      return normalizedFeature === selectedKey;
+    });
+    if (!matchedFeature) {
+      matchedFeature = mindanaoFeatureCollection.features.find((feature) => {
+        const provinceName = feature?.properties?.ADM2_EN || feature?.properties?.province || feature?.properties?.name;
+        const normalizedFeature = normalizeProvinceName(provinceName);
+        return normalizedFeature.includes(selectedKey) || selectedKey.includes(normalizedFeature);
+      });
+    }
+    if (!matchedFeature) return null;
+    return {
+      type: 'FeatureCollection',
+      features: [matchedFeature]
+    };
+  }, [mindanaoFeatureCollection, selectedProvince]);
+  const provinceBounds = useMemo(() => {
+    if (!selectedProvince || processedData.length === 0) return null;
+    const pts = processedData.map((site) => [site.latNum, site.lngNum]);
+    return pts.length ? L.latLngBounds(pts) : null;
+  }, [selectedProvince, processedData]);
+  const provinceOutlineBounds = useMemo(() => {
+    if (!provinceOutlineGeoJson) return null;
+    try {
+      return L.geoJSON(provinceOutlineGeoJson).getBounds();
+    } catch {
+      return null;
+    }
+  }, [provinceOutlineGeoJson]);
 
   return (
     <MapContainer center={[centreLat, centreLng]} zoom={currentZoom} zoomControl={isExpanded} style={{ height: "100%", width: "100%" }} preferCanvas={true}>
@@ -296,6 +368,7 @@ function MapVisualizer({ selectedSite = {}, filteredResults = [], isExpanded = f
         expanded={isExpanded}
         processedData={processedData}
         selectedSite={selectedSite}
+        provinceBounds={provinceOutlineBounds || provinceBounds}
       />
 
       <WMSTileLayer
@@ -305,6 +378,19 @@ function MapVisualizer({ selectedSite = {}, filteredResults = [], isExpanded = f
         transparent={true}
         opacity={0.4}
       />
+
+      {mindanaoFeatureCollection && (
+        <GeoJSON
+          data={mindanaoFeatureCollection}
+          interactive={false}
+          style={() => ({
+            color: '#3c4a66',
+            weight: 1,
+            opacity: 0.5,
+            fillOpacity: 0
+          })}
+        />
+      )}
 
       <MarkerClusterGroup
         chunkedLoading
@@ -346,6 +432,34 @@ function MapVisualizer({ selectedSite = {}, filteredResults = [], isExpanded = f
             <span style={{ fontWeight: 'bold' }}>{selectedSite.id}</span>
           </Tooltip>
         </Marker>
+      )}
+
+      {provinceBounds && !provinceOutlineGeoJson && (
+        <Rectangle
+          bounds={provinceBounds}
+          pathOptions={{
+            color: '#1a73e8',
+            weight: 2,
+            opacity: 0.9,
+            fillColor: '#1a73e8',
+            fillOpacity: 0.08,
+            dashArray: '6,4'
+          }}
+        />
+      )}
+
+      {provinceOutlineGeoJson && (
+        <GeoJSON
+          key={`province-outline-${String(selectedProvince || '')}`}
+          data={provinceOutlineGeoJson}
+          style={() => ({
+            color: '#1a73e8',
+            weight: 2.2,
+            opacity: 0.95,
+            fillColor: '#1a73e8',
+            fillOpacity: 0.11
+          })}
+        />
       )}
     </MapContainer>
   );
