@@ -1373,6 +1373,22 @@ const exportOptions = [
   { label: 'Unchanged Only', value: 'UNCHANGED' }
 ];
 
+const handleLogout = async () => {
+  try {
+    await localforage.clear();
+  } catch (error) {
+    console.warn('Failed to clear local cache during logout:', error);
+  }
+  localStorage.clear();
+  sessionStorage.clear();
+  const loginUrl = 'https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fconsole.cloud.google.com%2F&service=cloudconsole';
+  if (window.top && window.top !== window.self) {
+    window.top.location.href = loginUrl;
+  } else {
+    window.location.href = loginUrl;
+  }
+};
+
 const headerActions = (
   <DashboardHeaderActions
     lastModifiedText={lastModifiedName ? `${lastModifiedTimestamp} | ${lastModifiedName}` : lastModifiedTimestamp}
@@ -1412,6 +1428,7 @@ const headerActions = (
     firstName={firstName}
     recentItems={myProcessedData}
     onLoadRecentItem={handleLoadStoredData}
+    onLogout={handleLogout}
   />
 );
 
@@ -1597,19 +1614,12 @@ const headerActions = (
                     <button onClick={handleRefreshStoredData} style={{ background: 'var(--bg-input)', border: '1px solid var(--border-color)', color: 'var(--color-info)', fontSize: '0.75rem', fontWeight: 'bold', cursor: 'pointer', padding: '5px 10px', borderRadius: '4px', outline: 'none' }}>Refresh</button>
                   </div>
 
-                  {userInfo && (
-                    <div style={{ background: 'var(--bg-primary)', padding: '10px', borderRadius: '8px', border: '1px solid var(--border-light)', marginBottom: '15px' }}>
-                      <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Logged in as:</div>
-                      <div style={{ fontWeight: 'bold', color: 'var(--brand-purple)' }}>{currentUserName}</div>
-                    </div>
-                  )}
-
                   {lastModifiedInfo && lastModifiedInfo.timestamp && (
                     <div style={{ background: 'var(--bg-input)', padding: '10px', borderRadius: '8px', border: '1px solid var(--border-light)', marginBottom: '15px' }}>
                       <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '5px' }}>Last Data Modification:</div>
                       <div style={{ fontWeight: 'bold', color: 'var(--color-danger)' }}>{lastModifiedName}</div>
                       <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                        {lastModifiedInfo.action} • {lastModifiedInfo.fileName}
+                        {lastModifiedInfo.action} 📁 {lastModifiedInfo.fileName}
                       </div>
                       <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
                         {new Date(lastModifiedInfo.timestamp).toLocaleString()}

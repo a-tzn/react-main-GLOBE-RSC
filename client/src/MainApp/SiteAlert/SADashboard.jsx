@@ -215,6 +215,7 @@ export default function SADashboard() {
 
   // Backend integration state
   const [storedData, setStoredData] = useState([]);
+  const [storedDataMode, setStoredDataMode] = useState('wireless');
   const [userInfo, setUserInfo] = useState(() => getCachedUserInfo());
   const [lastModifiedInfo, setLastModifiedInfo] = useState(null);
   const [persistedSummaryStats, setPersistedSummaryStats] = useState(null);
@@ -477,7 +478,7 @@ export default function SADashboard() {
   ]);
 
   useEffect(() => {
-    const handleResize = () => setModalListHeight((window.innerHeight * 0.9) - 190);
+    const handleResize = () => setModalListHeight(Math.max(240, (window.innerHeight * 0.9) - 280));
     handleResize(); 
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
@@ -538,6 +539,7 @@ useEffect(() => {
           hasFreshCache = true;
           setUserInfo(cachedMeta.userInfo || getCachedUserInfo() || null);
           setStoredData(cachedMeta.storedData || []);
+          setStoredDataMode(dashboardMode);
           updateModeScopedState(setLatestKnownRecordIdByMode, cachedMeta.storedData?.[0]?.id || null, dashboardMode);
           const latestCachedSummary = Array.isArray(cachedMeta.storedData) && cachedMeta.storedData.length > 0 ? cachedMeta.storedData[0] : null;
           const cachedPreview = Array.isArray(cachedMeta.latestPreviewData) ? cachedMeta.latestPreviewData : [];
@@ -577,6 +579,7 @@ useEffect(() => {
         if (!isMounted) return;
 
         setStoredData(storedDataList);
+        setStoredDataMode(dashboardMode);
         updateModeScopedState(setLatestKnownRecordIdByMode, (prev) => prev || storedDataList?.[0]?.id || null, dashboardMode);
         setLastModifiedInfo(lastModified);
 
@@ -898,6 +901,7 @@ useEffect(() => {
                 getLastModifiedInfo(dashboardMode)
               ]);
               setStoredData(updatedStoredData);
+              setStoredDataMode(dashboardMode);
               updateModeScopedState(setLatestKnownRecordIdByMode, updatedStoredData?.[0]?.id || null, dashboardMode);
               updateModeScopedState(setActiveLoadedRecordIdByMode, updatedStoredData?.[0]?.id || null, dashboardMode);
               setLastModifiedInfo(lastModified);
@@ -1123,6 +1127,7 @@ useEffect(() => {
         getLastModifiedInfo(dashboardMode)
       ]);
       setStoredData(updatedStoredData);
+      setStoredDataMode(dashboardMode);
       const latestSummary = updatedStoredData.length > 0 ? updatedStoredData[0] : null;
       const refreshedPreview = Array.isArray(latestSummary?.metadata?.previewData) ? latestSummary.metadata.previewData : [];
       const refreshedProcessedCount = Number(latestSummary?.processedCount ?? latestSummary?.metadata?.processedRecords ?? refreshedPreview.length);
@@ -1184,6 +1189,7 @@ useEffect(() => {
   };
 
   useEffect(() => {
+    if (storedDataMode !== dashboardMode) return;
     const latestSummary = storedData?.[0];
     if (
       !latestSummary?.id ||
@@ -1194,7 +1200,7 @@ useEffect(() => {
     ) return;
     registerIncomingRecord(latestSummary, dashboardMode);
     updateModeScopedState(setLatestKnownRecordIdByMode, latestSummary.id, dashboardMode);
-  }, [storedData, activeLoadedRecordId, latestKnownRecordId, dashboardMode]);
+  }, [storedData, storedDataMode, activeLoadedRecordId, latestKnownRecordId, dashboardMode]);
 
   useEffect(() => {
     if (!userInfo) return undefined;
@@ -1206,6 +1212,7 @@ useEffect(() => {
           getLastModifiedInfo(dashboardMode)
         ]);
         setStoredData(updatedStoredData);
+        setStoredDataMode(dashboardMode);
         setLastModifiedInfo(lastModified);
       } catch (error) {
         console.warn(`Background incoming data check failed for ${dashboardMode}:`, error);
@@ -1222,6 +1229,83 @@ useEffect(() => {
     if (!term) return drillDownData.rawRows;
     return drillDownData.rawRows.filter(rawRow => Object.values(rawRow).some(val => String(val).toLowerCase().includes(term)));
   }, [drillDownData, modalSearchTerm]);
+
+  const modalTableColumnDefs = useMemo(() => {
+    const allKeys = [];
+    const seen = new Set();
+    filteredModalRows.forEach((rawRow) => {
+      Object.keys(rawRow || {}).forEach((key) => {
+        const upper = String(key).toUpperCase();
+        if (!seen.has(upper)) {
+          seen.add(upper);
+          allKeys.push(key);
+        }
+      });
+    });
+
+    const fixedDefs = [
+      { id: 'severity', label: 'Severity', keys: ['SEVERITY'] },
+      { id: 'alarm_text', label: 'Alarm Text', keys: ['ALARM TEXT', 'ALARM NAME', 'ALARM'] },
+      { id: 'alarm_type', label: 'Alarm Type', keys: ['ALARM SOURCE TYPE', 'ALARM TYPE', 'SOURCE TYPE'] },
+      { id: 'site_name', label: 'SiteName', keys: ['SITE NAME', 'NAME', 'SITE', 'NE NAME'] },
+      { id: 'alarm_time', label: 'Alarm Time', keys: ['ALARM TIME', 'LAST OCCURED (ST)', 'LAST OCCURRED (ST)', 'LAST OCCURED', 'LAST OCCURRED', 'EVENT TIME', 'TIME'] },
+      { id: 'original_alarm_time', label: 'Original Alarm Time', keys: ['ALARM TIME', 'LAST OCCURED (ST)', 'LAST OCCURRED (ST)', 'LAST OCCURED', 'LAST OCCURRED', 'EVENT TIME', 'TIME'], useOriginal: true },
+      { id: 'cancel_time', label: 'Cancel Time', keys: ['CANCEL TIME', 'CLEAR TIME', 'CLEARED TIME', 'CANCELLED TIME'] }
+    ];
+
+    const consumed = new Set(fixedDefs.flatMap((d) => d.keys.map((k) => String(k).toUpperCase())));
+    const remainingDefs = allKeys
+      .filter((key) => !consumed.has(String(key).toUpperCase()))
+      .map((key) => ({ id: `extra_${key}`, label: key, key }));
+
+    return [...fixedDefs, ...remainingDefs];
+  }, [filteredModalRows]);
+
+  const getRowValueByKeys = (rawRow, keys = []) => {
+    if (!rawRow || typeof rawRow !== 'object') return { value: null, matchedKey: null };
+    const entries = Object.entries(rawRow);
+    const upperKeys = keys.map((k) => String(k).toUpperCase());
+    for (let i = 0; i < entries.length; i += 1) {
+      const [key, value] = entries[i];
+      if (upperKeys.includes(String(key).toUpperCase())) {
+        return { value, matchedKey: key };
+      }
+    }
+    return { value: null, matchedKey: null };
+  };
+
+  const formatModalCellValue = (key, value, preserveOriginal = false) => {
+    if (value === null || value === undefined) return 'N/A';
+    if (preserveOriginal) {
+      const rawVal = String(value).trim();
+      return rawVal || 'N/A';
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      const keyLower = String(key).toLowerCase();
+      if ((keyLower.includes('time') || keyLower.includes('date') || keyLower.includes('stamp')) && value > 30000) {
+        const dateObj = new Date(Math.round((value - 25569) * 86400 * 1000));
+        if (!Number.isNaN(dateObj.getTime())) {
+          const m = dateObj.getUTCMonth() + 1;
+          const d = dateObj.getUTCDate();
+          const y = String(dateObj.getUTCFullYear()).slice(-2);
+          const hh = String(dateObj.getUTCHours()).padStart(2, '0');
+          const mm = String(dateObj.getUTCMinutes()).padStart(2, '0');
+          const ss = String(dateObj.getUTCSeconds()).padStart(2, '0');
+          return `${m}/${d}/${y} ${hh}:${mm}:${ss}`;
+        }
+      }
+    }
+    const strVal = String(value).trim();
+    return strVal || 'N/A';
+  };
+
+  const getModalCellValue = (rawRow, columnDef) => {
+    if (columnDef.key) {
+      return formatModalCellValue(columnDef.key, rawRow?.[columnDef.key]);
+    }
+    const { value, matchedKey } = getRowValueByKeys(rawRow, columnDef.keys || []);
+    return formatModalCellValue(matchedKey || columnDef.label, value, Boolean(columnDef.useOriginal));
+  };
 
   const liveTotalOccurrences = useMemo(() => results.reduce((sum, row) => sum + row.count, 0), [results]);
   const liveUniqueSitesCount = useMemo(() => new Set(results.map(row => row.name)).size, [results]);
@@ -1259,6 +1343,12 @@ useEffect(() => {
     }
     return [...results].sort((a,b) => b.count - a.count).slice(0, 50); 
   }, [results, selectedGraphAlarm]);
+
+  const mainTableColWidths = useMemo(() => (
+    dashboardMode === 'transport'
+      ? { pla: 140, site: 400, alarm: 230, dn: 430, count: 60 }
+      : { pla: 140, site: 280, alarm: 260, dn: 430, count: 110 }
+  ), [dashboardMode]);
 
   const timeAnalytics = useMemo(() => {
     const hourlyBuckets = Array.from({ length: 24 }, (_, h) => ({
@@ -1478,214 +1568,93 @@ useEffect(() => {
     setTimeout(() => { setIsDrillDownRendered(false); setDrillDownData(null); }, 350);
   };
 
-  const getValidEntries = (rawRow) => {
-    return Object.entries(rawRow).filter(([, value]) => {
-      if (value === null || value === undefined) return false;
-      const strVal = String(value).trim();
-      if (strVal === "" || strVal.toLowerCase() === "null" || strVal.toLowerCase() === "undefined") return false;
-      return true;
-    });
-  };
-
-  const getModalRowHeight = (index) => {
-    const raw = filteredModalRows[index];
-    const validEntries = getValidEntries(raw);
-    const gridRows = Math.ceil(validEntries.length / 5); 
-    return (gridRows * 120) + ((gridRows - 1) * 12) + 130; 
-  };
-
-  const VirtualizedRow = ({ index, style, filteredResults, isDarkMode, selectedRowDetails, dashboardMode, isFullDataLoading }) => {
-    const row = filteredResults[index];
-    let rowStyle = {
+  const getMainRowBaseStyle = (style, index, isDarkMode, isSelected) => {
+    const rowStyle = {
       ...style,
       display: 'flex',
       alignItems: 'center',
       padding: '0 20px',
-      cursor: "pointer",
-      transition: "background-color 0.2s",
-      borderBottom: isDarkMode ? "1px solid rgba(255,255,255,0.08)" : "1px solid rgba(15, 23, 42, 0.16)",
+      cursor: 'pointer',
+      transition: 'background-color 0.2s',
+      borderBottom: isDarkMode ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(15, 23, 42, 0.16)',
       boxSizing: 'border-box',
       fontSize: '0.85rem'
     };
     rowStyle.backgroundColor = index % 2 === 0
       ? (isDarkMode ? 'rgba(255, 255, 255, 0.018)' : 'rgba(15, 23, 42, 0.018)')
       : (isDarkMode ? 'rgba(148, 163, 184, 0.075)' : 'rgba(15, 23, 42, 0.05)');
-
-    if (selectedRowDetails === row) {
+    if (isSelected) {
       rowStyle.backgroundColor = isDarkMode ? 'rgba(56, 189, 248, 0.20)' : 'rgba(59, 130, 246, 0.12)';
     }
+    return rowStyle;
+  };
 
+  const VirtualizedWirelessRow = ({ index, style, filteredResults, isDarkMode, selectedRowDetails, isFullDataLoading, mainTableColWidths }) => {
+    const row = filteredResults[index];
+    const MAIN_COL = mainTableColWidths;
+    const rowStyle = getMainRowBaseStyle(style, index, isDarkMode, selectedRowDetails === row);
     const columnStyle = { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', paddingRight: '15px', boxSizing: 'border-box' };
 
-          return (
-            <div style={rowStyle} className="row-hover" onClick={() => { setSelectedRowDetails(row); handleSidebarViewChange('details'); setIsSidebarCollapsed(false); }}>
-              <div style={{ ...columnStyle, width: '12%', fontWeight: 'bold', color: dashboardMode === 'transport' ? 'var(--color-danger-light)' : 'var(--text-primary)' }}>
-                {row.pla || "N/A"}
-              </div>
-              <div style={{ ...columnStyle, width: '23%', color: 'var(--color-info)', fontWeight: 'bold' }}>
-                {row.name || "N/A"}
-              </div>
-              <div style={{ ...columnStyle, width: '20%', fontFamily: 'ARIAL', color: 'var(--text-primary)' }}>
-                {row.alert || "N/A"}
-              </div>
-              <div style={{ ...columnStyle, width: '37%', fontFamily: 'monospace', fontSize: '1rem', color: 'var(--text-primary)' }}>
-                {row.dn || "N/A"}
-              </div>
-              <div style={{ ...columnStyle, width: '8%', textAlign: 'center' }}>
-                <ThemedBadge
-                  variant="danger"
-                  onClick={(e) => openDrillDownModal(e, row)}
-                  disabled={isFullDataLoading}
-                  title={isFullDataLoading ? "Loading full data..." : "Click to view all occurrences"}
-                >
-                  {row.count}
-                </ThemedBadge>
-              </div>
-            </div>
-          );
-        };
-
-        const VirtualizedModalRow = ({ index, style, filteredModalRows, getValidEntries, isDarkMode }) => {
-          const raw = filteredModalRows[index];
-          const validEntries = getValidEntries(raw);
-          const findEntryValue = (keys = []) => {
-            const normalized = keys.map((k) => String(k).toUpperCase());
-            const found = validEntries.find(([k]) => normalized.includes(String(k).toUpperCase()));
-            return found?.[1] || null;
-          };
-          const heroAlarmText =
-            findEntryValue(['ALARM TEXT', 'ALARM NAME', 'NAME']) ||
-            findEntryValue(['ALARM SOURCE TYPE']) ||
-            'UNKNOWN ALARM';
-          const heroAlarmUpper = String(heroAlarmText).toUpperCase();
-
-          return (
-  <div style={{ ...style, padding: '0 5px 20px 5px', boxSizing: 'border-box' }}>
-    <div style={{
-      background: isDarkMode ? 'var(--bg-primary)' : 'var(--bg-input)',
-      padding: '24px',
-      borderRadius: '12px',
-      border: '1px solid var(--border-light)',
-      boxShadow: isDarkMode ? 'inset 0 1px 0 rgba(255,255,255,0.05), 0 8px 24px rgba(0,0,0,0.2)' : 'none',
-      boxSizing: 'border-box',
-      height: '100%',
-      display: 'flex',
-      flexDirection: 'column'
-    }}>
-
-      {/* --- 1. HERO BANNER: The most important data highlighted at the top --- */}
-      <div style={{
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'flex-start',
-        borderBottom: '1px solid var(--border-light)',
-        paddingBottom: '16px',
-        marginBottom: '16px',
-        flexShrink: 0
-      }}>
-        <div>
-          <div style={{ color: 'var(--text-secondary)', fontSize: '0.75rem', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '6px' }}>
-            Occurrence #{index + 1}
-          </div>
-          <div style={{ color: 'var(--text-primary)', fontSize: '1.25rem', fontWeight: 'bold', letterSpacing: '0.5px' }}>
-            {heroAlarmText}
-          </div>
+    return (
+      <div style={rowStyle} className="row-hover" onClick={() => { setSelectedRowDetails(row); handleSidebarViewChange('details'); setIsSidebarCollapsed(false); }}>
+        <div style={{ ...columnStyle, width: `${MAIN_COL.pla}px`, minWidth: `${MAIN_COL.pla}px`, fontWeight: 'bold', color: 'var(--text-primary)' }}>
+          {row.pla || 'N/A'}
         </div>
-        
-        <div style={{ textAlign: 'right' }}>
-           {/* Automatically find the Severity and color-code the badge */}
-           {(() => {
-              const sev = validEntries.find(([k]) => k.toUpperCase() === 'SEVERITY')?.[1] || 'N/A';
-              const sevUpper = String(sev).toUpperCase();
-              let sevColor = 'var(--text-secondary)'; // Default
-              let sevBg = 'rgba(255,255,255,0.05)';
-              
-              if (sevUpper === 'CRITICAL') {
-                  sevColor = 'var(--color-danger)';
-                  sevBg = 'var(--badge-danger-bg)';
-              } else if (sevUpper === 'MAJOR') {
-                  sevColor = 'var(--color-warning)';
-                  sevBg = 'rgba(245, 158, 11, 0.1)'; // Amber tint
-              }
-
-              return (
-                <div style={{
-                  background: isDarkMode ? sevBg : 'rgba(0,0,0,0.05)',
-                  padding: '6px 14px',
-                  borderRadius: '6px',
-                  color: sevColor,
-                  fontWeight: 'bold',
-                  fontSize: '0.9rem',
-                  border: `1px solid ${sevColor}40` // Adds a faint glowing border matching the text
-                }}>
-                  Severity: {sev}
-                </div>
-              );
-           })()}
+        <div style={{ ...columnStyle, width: `${MAIN_COL.site}px`, minWidth: `${MAIN_COL.site}px`, color: 'var(--color-info)', fontWeight: 'bold' }}>
+          {row.name || 'N/A'}
+        </div>
+        <div style={{ ...columnStyle, width: `${MAIN_COL.alarm}px`, minWidth: `${MAIN_COL.alarm}px`, fontFamily: 'ARIAL', color: 'var(--text-primary)' }}>
+          {row.alert || 'N/A'}
+        </div>
+        <div style={{ ...columnStyle, width: `${MAIN_COL.dn}px`, minWidth: `${MAIN_COL.dn}px`, fontFamily: 'monospace', fontSize: '1rem', color: 'var(--text-primary)' }}>
+          {row.dn || 'N/A'}
+        </div>
+        <div style={{ width: `${MAIN_COL.count}px`, minWidth: `${MAIN_COL.count}px`, marginLeft: 'auto', paddingRight: 0, boxSizing: 'border-box', display: 'flex', justifyContent: 'center' }}>
+          <ThemedBadge
+            variant="danger"
+            onClick={(e) => openDrillDownModal(e, row)}
+            disabled={isFullDataLoading}
+            title={isFullDataLoading ? 'Loading full data...' : 'Click to view all occurrences'}
+          >
+            {row.count}
+          </ThemedBadge>
         </div>
       </div>
+    );
+  };
 
-      {/* --- 2. METADATA LIST: Clean, borderless grid for fast scanning --- */}
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(4, 1fr)', /* 4 columns looks perfectly balanced here */
-        gap: '24px 16px',
-        overflowY: 'auto',
-        paddingRight: '8px'
-      }} className="custom-scrollbar">
-        
-        {validEntries.map(([key, value]) => {
-          const upperKey = key.toUpperCase();
-          
-          // Skip the keys we already featured in the Hero Banner so we don't duplicate them
-          if (
-            upperKey === 'SEVERITY' ||
-            (heroAlarmUpper !== 'UNKNOWN ALARM' &&
-              (upperKey === 'ALARM TEXT' || upperKey === 'ALARM NAME' || upperKey === 'NAME' || upperKey === 'ALARM SOURCE TYPE') &&
-              String(value).toUpperCase() === heroAlarmUpper)
-          ) return null;
+  const VirtualizedTransportRow = ({ index, style, filteredResults, isDarkMode, selectedRowDetails, isFullDataLoading, mainTableColWidths }) => {
+    const row = filteredResults[index];
+    const MAIN_COL = mainTableColWidths;
+    const rowStyle = getMainRowBaseStyle(style, index, isDarkMode, selectedRowDetails === row);
+    const columnStyle = { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', paddingRight: '15px', boxSizing: 'border-box' };
 
-          const isTimeCol = key.toLowerCase().includes('time') || key.toLowerCase().includes('date') || key.toLowerCase().includes('stamp');
-          let displayShort = String(value);
-          let displayOriginal = null;
-
-          // Keep your existing excellent Excel-date parsing logic
-          if (isTimeCol && typeof value === 'number' && value > 30000) {
-            const dateObj = new Date(Math.round((value - 25569) * 86400 * 1000));
-            const m = dateObj.getUTCMonth() + 1;
-            const d = dateObj.getUTCDate();
-            const y = String(dateObj.getUTCFullYear()).slice(-2);
-            const hh = String(dateObj.getUTCHours()).padStart(2, '0');
-            const mm = String(dateObj.getUTCMinutes()).padStart(2, '0');
-            const ss = String(dateObj.getUTCSeconds()).padStart(2, '0');
-            displayOriginal = `${m}/${d}/${y} ${hh}:${mm}:${ss}`;
-            displayShort = `${m}/${d}/${y} ${hh}:${mm}`;
-          }
-
-          return (
-            <div key={key} style={{ display: 'flex', flexDirection: 'column' }}>
-              <span style={{ color: 'var(--text-secondary)', fontSize: '0.65rem', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 'bold', marginBottom: '6px' }}>
-                {key}
-              </span>
-              
-              {displayOriginal ? (
-                <div style={{ display: 'flex', flexDirection: 'column' }}>
-                  <span style={{ fontWeight: '600', color: 'var(--text-primary)', fontSize: '0.9rem' }}>{displayShort}</span>
-                  <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '2px' }}>Orig: {displayOriginal}</span>
-                </div>
-              ) : (
-                <span style={{ fontWeight: '600', fontSize: '0.9rem', color: 'var(--text-primary)', wordBreak: 'break-word', lineHeight: '1.4' }}>
-                  {displayShort}
-                </span>
-              )}
-            </div>
-          );
-        })}
+    return (
+      <div style={rowStyle} className="row-hover" onClick={() => { setSelectedRowDetails(row); handleSidebarViewChange('details'); setIsSidebarCollapsed(false); }}>
+        <div style={{ ...columnStyle, width: `${MAIN_COL.pla}px`, minWidth: `${MAIN_COL.pla}px`, fontWeight: 'bold', color: 'var(--color-danger-light)' }}>
+          {row.pla || 'N/A'}
+        </div>
+        <div style={{ ...columnStyle, width: `${MAIN_COL.site}px`, minWidth: `${MAIN_COL.site}px`, color: 'var(--color-info)', fontWeight: 'bold' }}>
+          {row.name || 'N/A'}
+        </div>
+        <div style={{ ...columnStyle, width: `${MAIN_COL.alarm}px`, minWidth: `${MAIN_COL.alarm}px`, fontFamily: 'ARIAL', color: 'var(--text-primary)' }}>
+          {row.alert || 'N/A'}
+        </div>
+        <div style={{ ...columnStyle, width: `${MAIN_COL.dn}px`, minWidth: `${MAIN_COL.dn}px`, fontFamily: 'monospace', fontSize: '1rem', color: 'var(--text-primary)' }}>
+          {row.dn || 'N/A'}
+        </div>
+        <div style={{ width: `${MAIN_COL.count}px`, minWidth: `${MAIN_COL.count}px`, paddingRight: 0, boxSizing: 'border-box', display: 'flex', justifyContent: 'center' }}>
+          <ThemedBadge
+            variant="danger"
+            onClick={(e) => openDrillDownModal(e, row)}
+            disabled={isFullDataLoading}
+            title={isFullDataLoading ? 'Loading full data...' : 'Click to view all occurrences'}
+          >
+            {row.count}
+          </ThemedBadge>
+        </div>
       </div>
-      
-    </div>
-  </div>
-);
+    );
   };
 
   const CustomGraphTooltip = ({ active, payload }) => {
@@ -1729,6 +1698,22 @@ const exportOptions = [
   { label: 'Full Export', value: 'ALL' }
 ];
 
+const handleLogout = async () => {
+  try {
+    await localforage.clear();
+  } catch (error) {
+    console.warn('Failed to clear local cache during logout:', error);
+  }
+  localStorage.clear();
+  sessionStorage.clear();
+  const loginUrl = 'https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fconsole.cloud.google.com%2F&service=cloudconsole';
+  if (window.top && window.top !== window.self) {
+    window.top.location.href = loginUrl;
+  } else {
+    window.location.href = loginUrl;
+  }
+};
+
 const headerActions = (
   <DashboardHeaderActions
     lastModifiedText={lastModifiedName ? `${lastModifiedTimestamp} | ${lastModifiedName}` : lastModifiedTimestamp}
@@ -1768,6 +1753,7 @@ const headerActions = (
     firstName={firstName}
     recentItems={myProcessedData}
     onLoadRecentItem={handleLoadStoredData}
+    onLogout={handleLogout}
   />
 );
 
@@ -2094,19 +2080,12 @@ const headerActions = (
                     <button onClick={handleRefreshStoredData} style={{ background: 'var(--bg-input)', border: '1px solid var(--border-color)', color: 'var(--color-info)', fontSize: '0.75rem', fontWeight: 'bold', cursor: 'pointer', padding: '5px 10px', borderRadius: '4px', outline: 'none' }}>Refresh</button>
                   </div>
 
-                  {userInfo && (
-                    <div style={{ background: 'var(--bg-primary)', padding: '10px', borderRadius: '8px', border: '1px solid var(--border-light)', marginBottom: '15px' }}>
-                      <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Logged in as:</div>
-                      <div style={{ fontWeight: 'bold', color: 'var(--brand-purple)' }}>{currentUserName}</div>
-                    </div>
-                  )}
-
                   {lastModifiedInfo && lastModifiedInfo.timestamp && (
                     <div style={{ background: 'var(--bg-input)', padding: '10px', borderRadius: '8px', border: '1px solid var(--border-light)', marginBottom: '15px' }}>
                       <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '5px' }}>Last Data Modification:</div>
                       <div style={{ fontWeight: 'bold', color: 'var(--color-danger)' }}>{lastModifiedName}</div>
                       <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                        {lastModifiedInfo.action} â€¢ {lastModifiedInfo.fileName}
+                        {lastModifiedInfo.action} 📁 {lastModifiedInfo.fileName}
                       </div>
                       <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
                         {new Date(lastModifiedInfo.timestamp).toLocaleString()}
@@ -2114,7 +2093,7 @@ const headerActions = (
                     </div>
                   )}
 
-                  <div className="custom-scrollbar" style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
+                  <div className="custom-scrollbar" style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', paddingRight: '4px', marginLeft: '-10px' }}>
                     {isStoredDataLoading ? (
                       renderHistoryLoadingSkeleton()
                     ) : storedData.length > 0 ? (
@@ -2166,7 +2145,7 @@ const headerActions = (
           <div className="output-card" style={{ display: 'flex', flexDirection: 'column', height: '100%', transition: 'padding 0.4s ease' }}>
             <div className="table-toolbar" style={{ borderBottom: '1px solid var(--border-light)', background: 'var(--brand-purple)', color: 'white', flexWrap: 'wrap', gap: '12px' }}>
                <div style={{ display: 'flex', alignItems: 'center', gap: '15px', flex: '1 1 auto', minWidth: 0 }}>
-                  <button className="sidebar-toggle-btn" onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)} style={{ background: 'none', border: 'none', outline: 'none', color: 'var(--text-primary)', cursor: 'pointer', padding: '4px' }}>
+                  <button className="sidebar-toggle-btn" onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)} style={{ background: 'none', border: 'none', outline: 'none', color: 'white', cursor: 'pointer', padding: '4px', marginTop: '3px' }} title={isSidebarCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}>
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ transition: 'transform 0.3s ease', transform: isSidebarCollapsed ? 'rotate(180deg)' : 'rotate(0deg)' }}><polyline points="15 18 9 12 15 6"></polyline></svg>
                   </button>
                   <img src={warningDark} alt="Alerts" style={{ width: '24px' }} />
@@ -2222,9 +2201,9 @@ const headerActions = (
               {pendingIncomingRecord && showIncomingBanner && (
                 <div
                   style={{
-                    margin: '14px 14px 0 14px',
+                    margin: '14px 14px 14px 14px',
                     padding: '14px 16px',
-                    borderRadius: '16px',
+                    borderRadius: '10px',
                     border: isDarkMode ? '1px solid rgba(56, 189, 248, 0.25)' : '1px solid rgba(2, 132, 199, 0.18)',
                     background: isDarkMode
                       ? 'linear-gradient(135deg, rgba(8, 47, 73, 0.92), rgba(17, 28, 68, 0.96))'
@@ -2255,14 +2234,18 @@ const headerActions = (
                           <path d="M5 21h14" />
                         </svg>
                       </div>
-                      <div style={{ minWidth: 0 }}>
+                       <div style={{ minWidth: 0 }}>
                         <div style={{ fontSize: '0.92rem', fontWeight: 700, color: 'var(--text-primary)' }}>
                           New {dashboardMode === 'wireless' ? 'wireless' : 'transport'} data is available
                         </div>
                         <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '4px', lineHeight: 1.45 }}>
-                          <span style={{ color: 'var(--brand-purple)', fontWeight: 700 }}>{pendingIncomingRecord.fileName || 'Latest upload'}</span>
+                          <span style={{ color: isDarkMode ? '#9b7bff' : 'var(--brand-purple)', fontWeight: 700 }}>{pendingIncomingRecord.fileName || 'Latest upload'}</span>
                           {' '}was added by{' '}
-                          <span style={{ color: 'var(--text-primary)', fontWeight: 700 }}>{pendingIncomingRecord.metadata?.engineerName || pendingIncomingRecord.userName || 'another user'}</span>.
+                          <span style={{ color: 'var(--text-primary)', fontWeight: 700 }}>{pendingIncomingRecord.metadata?.engineerName || pendingIncomingRecord.userName || 'another user'}</span>
+                          {' '}at{' '}
+                          <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>
+                            {new Date(pendingIncomingRecord.uploadDate || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </span>.
                           {' '}Load it now, or keep working and return to it from notifications later.
                         </div>
                       </div>
@@ -2307,12 +2290,12 @@ const headerActions = (
                 </div>
               )}
               <div className="table-wrapper" style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-                <div style={{ display: 'flex', padding: '12px 35px 12px 20px', fontWeight: 'bold', borderBottom: isDarkMode ? '2px solid var(--border-color)' : '2px solid rgba(15, 23, 42, 0.18)', backgroundColor: 'var(--btn-scan-bg)', textTransform: 'uppercase', fontSize: '0.8rem', color: 'var(--text-inverse)' }}>
-                  <div style={{ width: '12%', paddingRight: '15px' }}>{dashboardMode === 'wireless' ? 'PLA_ID' : 'SEVERITY'}</div>
-                  <div style={{ width: '23%', paddingRight: '15px', color: 'var(--text-inverse)' }}>Site Name</div>
-                  <div style={{ width: '20%', paddingRight: '15px' }}>Alarm Text</div>
-                  <div style={{ width: '37%', paddingRight: '15px' }}>{dashboardMode === 'wireless' ? 'Distinguished Name' : 'Location Info'}</div>
-                  <div style={{ width: '8%', paddingRight: '15px', textAlign: 'center' }}>Count</div>
+                <div style={{ display: 'flex', padding: '12px 20px', fontWeight: 'bold', borderBottom: isDarkMode ? '2px solid var(--border-color)' : '2px solid rgba(15, 23, 42, 0.18)', backgroundColor: 'var(--btn-scan-bg)', textTransform: 'uppercase', fontSize: '0.8rem', color: 'var(--text-inverse)', boxSizing: 'border-box' }}>
+                  <div style={{ width: `${mainTableColWidths.pla}px`, minWidth: `${mainTableColWidths.pla}px`, paddingRight: '15px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', boxSizing: 'border-box' }}>{dashboardMode === 'wireless' ? 'PLA_ID' : 'SEVERITY'}</div>
+                  <div style={{ width: `${mainTableColWidths.site}px`, minWidth: `${mainTableColWidths.site}px`, paddingRight: '15px', color: 'var(--text-inverse)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', boxSizing: 'border-box' }}>Site Name</div>
+                  <div style={{ width: `${mainTableColWidths.alarm}px`, minWidth: `${mainTableColWidths.alarm}px`, paddingRight: '15px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', boxSizing: 'border-box' }}>Alarm Text</div>
+                  <div style={{ width: `${mainTableColWidths.dn}px`, minWidth: `${mainTableColWidths.dn}px`, paddingRight: '15px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', boxSizing: 'border-box' }}>{dashboardMode === 'wireless' ? 'Distinguished Name' : 'Location Info'}</div>
+                  <div style={{ width: `${mainTableColWidths.count}px`, minWidth: `${mainTableColWidths.count}px`, marginLeft: dashboardMode === 'wireless' ? 'auto' : 0, paddingRight: '15px', textAlign: 'center', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', boxSizing: 'border-box' }}>Count</div>
                 </div>
                 <div ref={listContainerRef} style={{ flex: 1, width: '100%', overflow: 'hidden', position: 'relative' }}>
                   {(() => {
@@ -2338,14 +2321,15 @@ const headerActions = (
                       return (
                         <div className={isTableRevealActive ? 'table-content-reveal' : ''} style={{ position: 'relative', width: '100%', height: '100%' }}>
                           <List
+                            key={`sa-main-list-${dashboardMode}`}
                             rowCount={filteredResults.length}
                             rowHeight={70}
                             style={{ height: mainListSize.height, width: mainListSize.width }}
                             overscanCount={10}
                             className="custom-scrollbar sa-table-scroll"
                             onScroll={handleMainListScroll}
-                            rowComponent={VirtualizedRow}
-                            rowProps={{ filteredResults, isDarkMode, selectedRowDetails, dashboardMode, isFullDataLoading }}
+                            rowComponent={dashboardMode === 'transport' ? VirtualizedTransportRow : VirtualizedWirelessRow}
+                            rowProps={{ filteredResults, isDarkMode, selectedRowDetails, dashboardMode, isFullDataLoading, mainTableColWidths }}
                           />
                           {(showTableLoadingHint || isFullDataLoading) && (
                             <div
@@ -2383,11 +2367,11 @@ const headerActions = (
                             >
                               {[...Array(8)].map((_, i) => (
                                 <div key={`sa-table-overlay-skeleton-${i}`} className="skeleton-row" style={{ display: 'flex', alignItems: 'center', padding: '0 20px', height: '70px', borderBottom: "1px solid rgba(128,128,128,0.05)", boxSizing: 'border-box' }}>
-                                  <div style={{ width: '12%', paddingRight: '15px' }}><div className="skeleton-bar" style={{ height: '12px', width: '60%', borderRadius: '4px' }}></div></div>
-                                  <div style={{ width: '23%', paddingRight: '15px' }}><div className="skeleton-bar" style={{ height: '12px', width: '80%', borderRadius: '4px' }}></div></div>
-                                  <div style={{ width: '20%', paddingRight: '15px' }}><div className="skeleton-bar" style={{ height: '12px', width: '70%', borderRadius: '4px' }}></div></div>
-                                  <div style={{ width: '37%', paddingRight: '15px' }}><div className="skeleton-bar" style={{ height: '12px', width: '90%', borderRadius: '4px' }}></div></div>
-                                  <div style={{ width: '8%', paddingRight: '15px', display: 'flex', justifyContent: 'center' }}><div className="skeleton-bar" style={{ height: '24px', width: '30px', borderRadius: '12px' }}></div></div>
+                                  <div style={{ width: `${mainTableColWidths.pla}px`, minWidth: `${mainTableColWidths.pla}px`, paddingRight: '15px' }}><div className="skeleton-bar" style={{ height: '12px', width: '60%', borderRadius: '4px' }}></div></div>
+                                  <div style={{ width: `${mainTableColWidths.site}px`, minWidth: `${mainTableColWidths.site}px`, paddingRight: '15px' }}><div className="skeleton-bar" style={{ height: '12px', width: '80%', borderRadius: '4px' }}></div></div>
+                                  <div style={{ width: `${mainTableColWidths.alarm}px`, minWidth: `${mainTableColWidths.alarm}px`, paddingRight: '15px' }}><div className="skeleton-bar" style={{ height: '12px', width: '70%', borderRadius: '4px' }}></div></div>
+                                  <div style={{ width: `${mainTableColWidths.dn}px`, minWidth: `${mainTableColWidths.dn}px`, paddingRight: '15px' }}><div className="skeleton-bar" style={{ height: '12px', width: '90%', borderRadius: '4px' }}></div></div>
+                                  <div style={{ width: `${mainTableColWidths.count}px`, minWidth: `${mainTableColWidths.count}px`, paddingRight: '15px', display: 'flex', justifyContent: 'center' }}><div className="skeleton-bar" style={{ height: '24px', width: '30px', borderRadius: '12px' }}></div></div>
                                 </div>
                               ))}
                             </div>
@@ -2403,11 +2387,11 @@ const headerActions = (
                         {/* The Skeleton Rows */}
                         {[...Array(8)].map((_, i) => (
                           <div key={i} className="skeleton-row" style={{ display: 'flex', alignItems: 'center', padding: '0 20px', height: '70px', borderBottom: "1px solid rgba(128,128,128,0.05)", boxSizing: 'border-box' }}>
-                            <div style={{ width: '12%', paddingRight: '15px' }}><div className="skeleton-bar" style={{ height: '12px', width: '60%', borderRadius: '4px' }}></div></div>
-                            <div style={{ width: '23%', paddingRight: '15px' }}><div className="skeleton-bar" style={{ height: '12px', width: '80%', borderRadius: '4px' }}></div></div>
-                            <div style={{ width: '20%', paddingRight: '15px' }}><div className="skeleton-bar" style={{ height: '12px', width: '70%', borderRadius: '4px' }}></div></div>
-                            <div style={{ width: '37%', paddingRight: '15px' }}><div className="skeleton-bar" style={{ height: '12px', width: '90%', borderRadius: '4px' }}></div></div>
-                            <div style={{ width: '8%', paddingRight: '15px', display: 'flex', justifyContent: 'center' }}><div className="skeleton-bar" style={{ height: '24px', width: '30px', borderRadius: '12px' }}></div></div>
+                            <div style={{ width: `${mainTableColWidths.pla}px`, minWidth: `${mainTableColWidths.pla}px`, paddingRight: '15px' }}><div className="skeleton-bar" style={{ height: '12px', width: '60%', borderRadius: '4px' }}></div></div>
+                            <div style={{ width: `${mainTableColWidths.site}px`, minWidth: `${mainTableColWidths.site}px`, paddingRight: '15px' }}><div className="skeleton-bar" style={{ height: '12px', width: '80%', borderRadius: '4px' }}></div></div>
+                            <div style={{ width: `${mainTableColWidths.alarm}px`, minWidth: `${mainTableColWidths.alarm}px`, paddingRight: '15px' }}><div className="skeleton-bar" style={{ height: '12px', width: '70%', borderRadius: '4px' }}></div></div>
+                            <div style={{ width: `${mainTableColWidths.dn}px`, minWidth: `${mainTableColWidths.dn}px`, paddingRight: '15px' }}><div className="skeleton-bar" style={{ height: '12px', width: '90%', borderRadius: '4px' }}></div></div>
+                            <div style={{ width: `${mainTableColWidths.count}px`, minWidth: `${mainTableColWidths.count}px`, paddingRight: '15px', display: 'flex', justifyContent: 'center' }}><div className="skeleton-bar" style={{ height: '24px', width: '30px', borderRadius: '12px' }}></div></div>
                           </div>
                         ))}
 
@@ -2514,17 +2498,47 @@ const headerActions = (
               <input type="text" placeholder="Search raw logs..." value={modalSearchTerm} onChange={(e) => setModalSearchTerm(e.target.value)} style={{ padding: '8px 15px', borderRadius: '20px', border: '1px solid var(--border-color)', background: 'var(--bg-input)', color: 'var(--text-primary)', width: '250px', outline: 'none' }} />
             </div>
 
-            <div style={{ flex: 1, padding: '20px 30px 0 30px', overflow: 'hidden' }}>
+            <div style={{ flex: 1, minHeight: 0, padding: '20px 30px 20px 30px', overflow: 'hidden' }}>
               {filteredModalRows.length > 0 ? (
-                <List
-                  rowCount={filteredModalRows.length}
-                  rowHeight={getModalRowHeight}
-                  style={{ height: modalListHeight, width: '100%' }}
-                  overscanCount={2}
-                  className="custom-scrollbar"
-                  rowComponent={VirtualizedModalRow}
-                  rowProps={{ filteredModalRows, getValidEntries, isDarkMode }}
-                />
+                <div style={{ height: Math.max(120, modalListHeight), minHeight: 0, width: '100%', border: '1px solid var(--border-light)', borderRadius: '10px', overflow: 'auto', background: 'var(--bg-input)' }} className="custom-scrollbar">
+                  <div style={{ minWidth: `${(modalTableColumnDefs.length * 240) + 80}px`, width: 'max-content' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', height: '46px', fontSize: '0.72rem', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.4px', color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-light)', background: isDarkMode ? 'rgba(148,163,184,0.09)' : 'rgba(15,23,42,0.06)', position: 'sticky', top: 0, zIndex: 2 }}>
+                      <div style={{ width: '80px', minWidth: '80px', padding: '0 10px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>#</div>
+                      {modalTableColumnDefs.map((columnDef) => (
+                        <div key={columnDef.id} title={columnDef.label} style={{ width: '240px', minWidth: '240px', padding: '0 10px', borderLeft: '1px solid var(--border-light)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {columnDef.label}
+                        </div>
+                      ))}
+                    </div>
+                    {filteredModalRows.map((raw, index) => (
+                      <div
+                        key={`modal-row-${index}`}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          height: '56px',
+                          borderBottom: '1px solid var(--border-light)',
+                          backgroundColor: index % 2 === 0
+                            ? (isDarkMode ? 'rgba(255,255,255,0.02)' : 'rgba(15,23,42,0.02)')
+                            : 'transparent',
+                          fontSize: '0.8rem',
+                          color: 'var(--text-primary)'
+                        }}
+                      >
+                        <div style={{ width: '80px', minWidth: '80px', padding: '0 10px', fontWeight: 700, color: 'var(--text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{index + 1}</div>
+                        {modalTableColumnDefs.map((columnDef) => (
+                          <div
+                            key={`modal-cell-${index}-${columnDef.id}`}
+                            title={getModalCellValue(raw, columnDef)}
+                            style={{ width: '240px', minWidth: '240px', padding: '0 10px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', borderLeft: '1px solid var(--border-light)' }}
+                          >
+                            {getModalCellValue(raw, columnDef)}
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                </div>
               ) : (
                 <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-secondary)' }}>No logs match your search.</div>
               )}
@@ -2670,6 +2684,7 @@ const headerActions = (
                       </button>
                     )}
                   </div>
+                  
                   
                   <div className="custom-scrollbar" style={{ flex: 1, overflowY: 'auto' }}>
                      <div style={{ display: 'flex', padding: '10px', fontWeight: 'bold', borderBottom: '2px solid var(--border-color)', color: 'var(--text-inverse)', textTransform: 'uppercase', fontSize: '0.8rem', position: 'sticky', top: 0, background: 'var(--btn-scan-bg)', zIndex: 1 }}>
