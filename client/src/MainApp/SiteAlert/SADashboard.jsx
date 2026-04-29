@@ -214,8 +214,7 @@ export default function SADashboard() {
   const autoFullLoadAttemptRef = useRef('');
 
   // Backend integration state
-  const [storedData, setStoredData] = useState([]);
-  const [storedDataMode, setStoredDataMode] = useState('wireless');
+  const [storedDataByMode, setStoredDataByMode] = useState(() => createModeState([]));
   const [userInfo, setUserInfo] = useState(() => getCachedUserInfo());
   const [lastModifiedInfo, setLastModifiedInfo] = useState(null);
   const [persistedSummaryStats, setPersistedSummaryStats] = useState(null);
@@ -238,9 +237,9 @@ export default function SADashboard() {
   const CHART_COLORS = ['#8a2be2', '#1a73e8', '#00bfa5', '#f0a500', '#f02849'];
   const currentLogo = isDarkMode ? globeLogoDark : globeLogoLight;
   const CACHE_TTL_MS = 5 * 60 * 1000;
-  const cacheKey = `site_alert_cache_${dashboardMode}_v1`;
-  const cacheMetaKey = `${cacheKey}_meta`;
-  const cacheDataKey = `${cacheKey}_full`;
+  const getCacheMetaKey = (mode = dashboardMode) => `site_alert_cache_${mode}_v1_meta`;
+  const getCacheDataKey = (mode = dashboardMode) => `site_alert_cache_${mode}_v1_full`;
+  const storedData = storedDataByMode[dashboardMode] || [];
   const notifications = notificationsByMode[dashboardMode] || [];
   const activeLoadedRecordId = activeLoadedRecordIdByMode[dashboardMode] || null;
   const pendingIncomingRecord = pendingIncomingRecordByMode[dashboardMode] || null;
@@ -370,6 +369,7 @@ export default function SADashboard() {
   };
 
   const saveDashboardCache = async ({
+    mode = dashboardMode,
     nextUserInfo = null,
     nextStoredData = [],
     nextLastModifiedInfo = null,
@@ -377,6 +377,8 @@ export default function SADashboard() {
     latestPreviewData = [],
     nextSummaryStats = null
   }) => {
+    const cacheMetaKey = getCacheMetaKey(mode);
+    const cacheDataKey = getCacheDataKey(mode);
     const timestamp = Date.now();
     await localforage.setItem(cacheMetaKey, {
       userInfo: nextUserInfo,
@@ -422,6 +424,7 @@ export default function SADashboard() {
       const fullStoredData = await getUploadedDataById(latestStoredDataId, true, dashboardMode);
       applyStoredProcessedData({ ...fullStoredData, id: fullStoredData.id || latestStoredDataId }, dashboardMode);
       await saveDashboardCache({
+        mode: dashboardMode,
         nextUserInfo: userInfo || getCachedUserInfo() || null,
         nextStoredData: storedData,
         nextLastModifiedInfo: lastModifiedInfo,
@@ -533,13 +536,14 @@ useEffect(() => {
       });
 
       try {
+        const cacheMetaKey = getCacheMetaKey(dashboardMode);
+        const cacheDataKey = getCacheDataKey(dashboardMode);
         const cachedMeta = await localforage.getItem(cacheMetaKey);
         const isFresh = Boolean(cachedMeta?.timestamp) && (Date.now() - cachedMeta.timestamp) < CACHE_TTL_MS;
         if (isFresh && isMounted) {
           hasFreshCache = true;
           setUserInfo(cachedMeta.userInfo || getCachedUserInfo() || null);
-          setStoredData(cachedMeta.storedData || []);
-          setStoredDataMode(dashboardMode);
+          updateModeScopedState(setStoredDataByMode, cachedMeta.storedData || [], dashboardMode);
           updateModeScopedState(setLatestKnownRecordIdByMode, cachedMeta.storedData?.[0]?.id || null, dashboardMode);
           const latestCachedSummary = Array.isArray(cachedMeta.storedData) && cachedMeta.storedData.length > 0 ? cachedMeta.storedData[0] : null;
           const cachedPreview = Array.isArray(cachedMeta.latestPreviewData) ? cachedMeta.latestPreviewData : [];
@@ -578,8 +582,7 @@ useEffect(() => {
 
         if (!isMounted) return;
 
-        setStoredData(storedDataList);
-        setStoredDataMode(dashboardMode);
+        updateModeScopedState(setStoredDataByMode, storedDataList, dashboardMode);
         updateModeScopedState(setLatestKnownRecordIdByMode, (prev) => prev || storedDataList?.[0]?.id || null, dashboardMode);
         setLastModifiedInfo(lastModified);
 
@@ -607,6 +610,7 @@ useEffect(() => {
 
         // Keep preview rows interactive; full rows are loaded lazily on demand.
         await saveDashboardCache({
+          mode: dashboardMode,
           nextUserInfo: userData || getCachedUserInfo() || null,
           nextStoredData: storedDataList,
           nextLastModifiedInfo: lastModified,
@@ -900,12 +904,12 @@ useEffect(() => {
                 getUserUploadedDataSummary(10, dashboardMode, true),
                 getLastModifiedInfo(dashboardMode)
               ]);
-              setStoredData(updatedStoredData);
-              setStoredDataMode(dashboardMode);
+              updateModeScopedState(setStoredDataByMode, updatedStoredData, dashboardMode);
               updateModeScopedState(setLatestKnownRecordIdByMode, updatedStoredData?.[0]?.id || null, dashboardMode);
               updateModeScopedState(setActiveLoadedRecordIdByMode, updatedStoredData?.[0]?.id || null, dashboardMode);
               setLastModifiedInfo(lastModified);
               saveDashboardCache({
+                mode: dashboardMode,
                 nextUserInfo: userInfo || getCachedUserInfo() || null,
                 nextStoredData: updatedStoredData,
                 nextLastModifiedInfo: lastModified,
@@ -1047,10 +1051,12 @@ useEffect(() => {
       setLatestStoredDataId(storedDataItem?.id || null);
       const fullStoredData = await getUploadedDataById(storedDataItem.id, true, modeOverride);
       applyStoredProcessedData({ ...fullStoredData, id: fullStoredData.id || storedDataItem.id }, modeOverride);
-      updateModeScopedState(setLatestKnownRecordIdByMode, storedData?.[0]?.id || storedDataItem?.id || null, modeOverride);
+      const modeStoredData = storedDataByMode[modeOverride] || [];
+      updateModeScopedState(setLatestKnownRecordIdByMode, modeStoredData?.[0]?.id || storedDataItem?.id || null, modeOverride);
       saveDashboardCache({
+        mode: modeOverride,
         nextUserInfo: userInfo || getCachedUserInfo() || null,
-        nextStoredData: storedData,
+        nextStoredData: modeStoredData,
         nextLastModifiedInfo: lastModifiedInfo,
         latestStoredData: { ...fullStoredData, id: fullStoredData.id || storedDataItem.id },
         latestPreviewData: fullStoredData?.metadata?.previewData || results,
@@ -1126,8 +1132,7 @@ useEffect(() => {
         getUserUploadedDataSummary(10, dashboardMode, true),
         getLastModifiedInfo(dashboardMode)
       ]);
-      setStoredData(updatedStoredData);
-      setStoredDataMode(dashboardMode);
+      updateModeScopedState(setStoredDataByMode, updatedStoredData, dashboardMode);
       const latestSummary = updatedStoredData.length > 0 ? updatedStoredData[0] : null;
       const refreshedPreview = Array.isArray(latestSummary?.metadata?.previewData) ? latestSummary.metadata.previewData : [];
       const refreshedProcessedCount = Number(latestSummary?.processedCount ?? latestSummary?.metadata?.processedRecords ?? refreshedPreview.length);
@@ -1154,6 +1159,7 @@ useEffect(() => {
         message: 'Latest processed records were checked from the database.'
       });
       saveDashboardCache({
+        mode: dashboardMode,
         nextUserInfo: userInfo || getCachedUserInfo() || null,
         nextStoredData: updatedStoredData,
         nextLastModifiedInfo: lastModified,
@@ -1189,7 +1195,6 @@ useEffect(() => {
   };
 
   useEffect(() => {
-    if (storedDataMode !== dashboardMode) return;
     const latestSummary = storedData?.[0];
     if (
       !latestSummary?.id ||
@@ -1200,7 +1205,7 @@ useEffect(() => {
     ) return;
     registerIncomingRecord(latestSummary, dashboardMode);
     updateModeScopedState(setLatestKnownRecordIdByMode, latestSummary.id, dashboardMode);
-  }, [storedData, storedDataMode, activeLoadedRecordId, latestKnownRecordId, dashboardMode]);
+  }, [storedData, activeLoadedRecordId, latestKnownRecordId, dashboardMode]);
 
   useEffect(() => {
     if (!userInfo) return undefined;
@@ -1211,8 +1216,7 @@ useEffect(() => {
           getUserUploadedDataSummary(10, dashboardMode, true),
           getLastModifiedInfo(dashboardMode)
         ]);
-        setStoredData(updatedStoredData);
-        setStoredDataMode(dashboardMode);
+        updateModeScopedState(setStoredDataByMode, updatedStoredData, dashboardMode);
         setLastModifiedInfo(lastModified);
       } catch (error) {
         console.warn(`Background incoming data check failed for ${dashboardMode}:`, error);
